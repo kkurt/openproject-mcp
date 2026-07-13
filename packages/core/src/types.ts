@@ -139,3 +139,21 @@ export interface WorkPackageCollectionResult {
   pageSize: number;
   offset: number;
 }
+
+/** One column of a (status-based) board, backed by a saved query. */
+export interface BoardColumnDTO {
+  name: string;
+  queryId: number;
+  /** The status this column filters on, when it is a status-based board column. */
+  statusId: number | null;
+  /** 1-based left-to-right position. */
+  position: number;
+}
+
+/** A board (OpenProject stores these as Grids). */
+export interface BoardDTO {
+  id: number;
+  name: string;
+  projectIdentifier: string | null;
+  columns: BoardColumnDTO[];
+}

@@ -47,7 +47,7 @@ describe('buildPromptVariables', () => {
     expect(vars.type).toBe('Bug');
     expect(vars.relations).toContain('parent #40: Epic');
     expect(vars.comments).toContain('Bob');
-    expect(vars.attachments).toContain('log.txt');
+    expect(vars.attachments).toContain('#1 log.txt');
     expect(vars.typeGuidance).toMatch(/BUG/);
     expect(vars.targetRepo).toBe('/repo');
   });

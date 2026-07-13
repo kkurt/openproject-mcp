@@ -7,9 +7,12 @@ export interface McpConfig {
   readOnly: boolean;
   /** Status names whose transitions always require human approval (case-insensitive). */
   protectedTransitions: string[];
+  /** Status a work package moves to when start_work_package is called. */
+  startStatus: string;
 }
 
 export const DEFAULT_PROTECTED_TRANSITIONS = ['Closed', 'Rejected'];
+export const DEFAULT_START_STATUS = 'In progress';
 
 function parseBool(value: string | undefined): boolean {
   if (!value) return false;
@@ -33,5 +36,6 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): McpConf
     apiKey,
     readOnly: parseBool(env.OPENPROJECT_READONLY),
     protectedTransitions,
+    startStatus: env.OPENPROJECT_START_STATUS?.trim() || DEFAULT_START_STATUS,
   };
 }

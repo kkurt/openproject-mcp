@@ -2,7 +2,14 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ListWorkPackagesParams, SortBy } from '@openproject-agent/core';
 import { z } from 'zod';
-import { jsonResult, type ToolContext } from './context.js';
+import { imageResult, jsonResult, textResult, type ToolContext } from './context.js';
+
+/** Heuristic: treat content with no NUL byte in its first 512 bytes as text. */
+function isProbablyText(data: Buffer): boolean {
+  const n = Math.min(data.length, 512);
+  for (let i = 0; i < n; i++) if (data[i] === 0) return false;
+  return true;
+}
 
 const sortItem = z.object({
   field: z.string().describe('Field to sort by, e.g. "priority", "id", "updatedAt".'),
@@ -142,5 +149,41 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
       inputSchema: { workPackageId: z.number().int().positive().describe('Work package id.') },
     },
     async ({ workPackageId }) => jsonResult(await ctx.client.getAllowedStatusTransitions(workPackageId)),
+  );
+
+  server.registerTool(
+    'get_attachment',
+    {
+      title: 'Get attachment content',
+      description:
+        'Download a work-package attachment by id and return its content. Images are returned as viewable ' +
+        'image content; text files (logs, .txt, .json, ...) are inlined; other binaries return a metadata note. ' +
+        'Attachment ids come from get_work_package (attachments[].id).',
+      inputSchema: {
+        attachmentId: z.number().int().positive().describe('Attachment id.'),
+        maxBytes: z
+          .number()
+          .int()
+          .positive()
+          .max(20_000_000)
+          .optional()
+          .describe('Max bytes to inline (default 5,000,000).'),
+      },
+    },
+    async ({ attachmentId, maxBytes }) => {
+      const att = await ctx.client.downloadAttachment(attachmentId);
+      const limit = maxBytes ?? 5_000_000;
+      if (att.data.length > limit) {
+        return textResult(`Attachment "${att.fileName}" is ${att.data.length} bytes (> maxBytes ${limit}); not inlined.`);
+      }
+      const ct = att.contentType ?? '';
+      if (ct.startsWith('image/')) {
+        return imageResult(att.data.toString('base64'), ct, `Attachment "${att.fileName}" (${ct}, ${att.data.length} bytes):`);
+      }
+      if (/^text\/|^application\/(json|xml|.*\+xml|.*yaml|x-yaml|javascript|x-sh|csv)/.test(ct) || isProbablyText(att.data)) {
+        return textResult(`Attachment "${att.fileName}" (${ct || 'text'}):\n\n${att.data.toString('utf8')}`);
+      }
+      return textResult(`Attachment "${att.fileName}" is ${ct || 'binary'} (${att.data.length} bytes) and cannot be inlined.`);
+    },
   );
 }

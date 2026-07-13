@@ -5,7 +5,7 @@
  * the work-package form.
  */
 import { HttpClient, type HttpClientOptions } from './http.js';
-import { ConflictError, NotFoundError, UnprocessableError } from './errors.js';
+import { ConflictError, NotFoundError, OpenProjectError, UnprocessableError } from './errors.js';
 import {
   assigneeIdFilter,
   closedStatusFilter,
@@ -23,6 +23,8 @@ import {
 import * as map from './map.js';
 import type {
   AttachmentDTO,
+  BoardColumnDTO,
+  BoardDTO,
   CommentDTO,
   HalCollection,
   HalResource,
@@ -76,6 +78,21 @@ export function hoursToIso8601(hours: number): string {
   if (h) out += `${h}H`;
   if (m) out += `${m}M`;
   return out === 'PT' ? 'PT0H' : out;
+}
+
+/** Pull the status id out of a board widget's query filters, if it is status-based. */
+function extractStatusId(filters: unknown): number | null {
+  if (!Array.isArray(filters)) return null;
+  for (const f of filters) {
+    if (f && typeof f === 'object') {
+      const spec = (f as Record<string, { values?: unknown[] } | undefined>).status_id ??
+        (f as Record<string, { values?: unknown[] } | undefined>).status;
+      const raw = spec?.values?.[0];
+      const n = Number(raw);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
 }
 
 export class OpenProjectClient {
@@ -134,6 +151,95 @@ export class OpenProjectClient {
       this.currentUserCache = map.mapUser(hal);
     }
     return this.currentUserCache;
+  }
+
+  // --- boards (OpenProject stores boards as grids) -------------------------
+
+  /** List boards. Optionally restrict to one project (by identifier). */
+  async listBoards(projectId?: string | number): Promise<BoardDTO[]> {
+    const [col, statuses] = await Promise.all([
+      this.http.get<HalCollection>('/grids', { query: { pageSize: 200 } }),
+      this.listStatuses(),
+    ]);
+    const statusName = (id: number | null): string | null =>
+      id == null ? null : (statuses.find((s) => s.id === id)?.name ?? null);
+
+    const boards: BoardDTO[] = [];
+    for (const grid of col._embedded?.elements ?? []) {
+      const scopeLink = grid._links?.['scope'];
+      const scope = (Array.isArray(scopeLink) ? scopeLink[0] : scopeLink)?.href ?? '';
+      if (!/\/boards\/?$/.test(scope)) continue; // only board grids
+
+      const identifier = /\/projects\/([^/]+)\/boards\/?$/.exec(scope)?.[1] ?? null;
+      if (projectId != null && identifier !== String(projectId)) continue;
+
+      const widgets = (Array.isArray(grid['widgets']) ? grid['widgets'] : []) as Array<Record<string, unknown>>;
+      const columns: BoardColumnDTO[] = widgets
+        .filter((w) => w['identifier'] === 'work_package_query')
+        .sort((a, b) => Number(a['startColumn'] ?? 0) - Number(b['startColumn'] ?? 0))
+        .map((w, i) => {
+          const opts = (w['options'] ?? {}) as Record<string, unknown>;
+          const queryId = Number(opts['queryId'] ?? opts['query_id']);
+          const statusId = extractStatusId(opts['filters']);
+          return { name: statusName(statusId) ?? `Column ${i + 1}`, queryId, statusId, position: i + 1 };
+        })
+        .filter((c) => Number.isFinite(c.queryId));
+
+      boards.push({ id: grid.id ?? 0, name: String(grid['name'] ?? ''), projectIdentifier: identifier, columns });
+    }
+    return boards;
+  }
+
+  /** Find a board by name within a project (throws if none or ambiguous). */
+  async getBoard(name: string, projectId: string | number): Promise<BoardDTO> {
+    const boards = await this.listBoards(projectId);
+    const matches = boards.filter((b) => b.name.toLowerCase() === name.toLowerCase());
+    if (matches.length === 0) {
+      throw new NotFoundError(
+        `No board named '${name}' in project '${projectId}'. Available: ${boards.map((b) => b.name).join(', ') || '(none)'}`,
+        404,
+      );
+    }
+    if (matches.length > 1) {
+      throw new OpenProjectError(`Multiple boards named '${name}' in project '${projectId}'; rename to disambiguate.`, 409);
+    }
+    return matches[0]!;
+  }
+
+  /** Cards in a board column, via its saved query scoped to the project (preserves board order). */
+  async listBoardColumnWorkPackages(
+    projectId: string | number,
+    queryId: number,
+    params: { pageSize?: number; offset?: number } = {},
+  ): Promise<WorkPackageCollectionResult> {
+    const query = { query_id: queryId, pageSize: params.pageSize ?? 50, offset: params.offset ?? 1 };
+    const col = await this.http.get<HalCollection>(
+      `/projects/${encodeURIComponent(String(projectId))}/work_packages`,
+      { query },
+    );
+    return {
+      elements: (col._embedded?.elements ?? []).map((e) => map.mapWorkPackageSummary(e, this.baseUrl)),
+      total: col.total,
+      count: col.count,
+      pageSize: col.pageSize,
+      offset: col.offset,
+    };
+  }
+
+  async listAllBoardColumnWorkPackages(
+    projectId: string | number,
+    queryId: number,
+  ): Promise<WorkPackageSummaryDTO[]> {
+    const pageSize = 100;
+    const all: WorkPackageSummaryDTO[] = [];
+    let offset = 1;
+    for (;;) {
+      const page = await this.listBoardColumnWorkPackages(projectId, queryId, { pageSize, offset });
+      all.push(...page.elements);
+      if (page.elements.length === 0 || all.length >= page.total) break;
+      offset += 1;
+    }
+    return all;
   }
 
   // --- name -> id resolution -----------------------------------------------
@@ -268,6 +374,31 @@ export class OpenProjectClient {
   async getAttachments(id: number | string): Promise<AttachmentDTO[]> {
     const col = await this.http.get<HalCollection>(`/work_packages/${id}/attachments`);
     return (col._embedded?.elements ?? []).map((e) => map.mapAttachment(e, this.baseUrl));
+  }
+
+  /** Fetch an attachment's binary content (so an agent can view images / read text files). */
+  async downloadAttachment(attachmentId: number | string): Promise<{
+    id: number;
+    fileName: string;
+    contentType: string | null;
+    fileSize: number | null;
+    data: Buffer;
+  }> {
+    const att = await this.http.get<HalResource>(`/attachments/${attachmentId}`);
+    const dto = map.mapAttachment(att, this.baseUrl);
+    const links = att._links ?? {};
+    const dl = (links['downloadLocation'] ?? links['staticDownloadLocation']) as { href?: string | null } | undefined;
+    if (!dl?.href) {
+      throw new NotFoundError(`Attachment ${attachmentId} has no download location`, 404);
+    }
+    const bin = await this.http.getBinaryByHref(dl.href);
+    return {
+      id: dto.id,
+      fileName: dto.fileName,
+      contentType: dto.contentType ?? bin.contentType,
+      fileSize: dto.fileSize,
+      data: bin.data,
+    };
   }
 
   /** Discover the status transitions OpenProject currently permits for this WP (from its form). */

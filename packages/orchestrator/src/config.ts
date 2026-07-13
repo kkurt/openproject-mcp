@@ -23,6 +23,14 @@ export const ConfigSchema = z.object({
       priority: z.array(z.string()).optional(),
     })
     .default({}),
+  /** When set, the queue is built from a board column instead of filters.statuses. */
+  board: z
+    .object({
+      name: z.string().min(1),
+      /** Column to pull from; defaults to the leftmost column. */
+      sourceColumn: z.string().optional(),
+    })
+    .optional(),
   order: z.array(SortPair).default([
     ['priority', 'desc'],
     ['id', 'asc'],
@@ -40,7 +48,9 @@ export const ConfigSchema = z.object({
       maxTurns: z.number().int().positive().default(40),
       model: z.string().optional(),
       timeoutMs: z.number().int().positive().default(30 * 60 * 1000),
-      allowedTools: z.array(z.string()).default(['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash(npm test:*)']),
+      allowedTools: z
+        .array(z.string())
+        .default(['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash(npm test:*)', 'mcp__openproject']),
       disallowedTools: z.array(z.string()).default(['Bash(git:*)']),
       addDirs: z.array(z.string()).default([]),
     })

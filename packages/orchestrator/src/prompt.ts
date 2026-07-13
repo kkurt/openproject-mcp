@@ -43,7 +43,9 @@ function formatComments(wp: WorkPackageDetailDTO): string {
 
 function formatAttachments(wp: WorkPackageDetailDTO): string {
   if (wp.attachments.length === 0) return '(none)';
-  return wp.attachments.map((a) => `- ${a.fileName}`).join('\n');
+  return wp.attachments
+    .map((a) => `- #${a.id} ${a.fileName}${a.contentType ? ` (${a.contentType})` : ''}`)
+    .join('\n');
 }
 
 export function buildPromptVariables(

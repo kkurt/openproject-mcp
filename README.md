@@ -71,8 +71,9 @@ claude mcp add openproject \
   -- node ./packages/mcp/dist/bin.js
 ```
 
-Optional env: `OPENPROJECT_READONLY=true` (block all writes) and
-`OPENPROJECT_PROTECTED_TRANSITIONS=Closed,Rejected`.
+Optional env: `OPENPROJECT_READONLY=true` (block all writes),
+`OPENPROJECT_PROTECTED_TRANSITIONS=Closed,Rejected`, and `OPENPROJECT_START_STATUS="In progress"`
+(the status `start_work_package` moves a work package to).
 
 Or add a project-scoped `.mcp.json` (checked into a repo Claude Code runs in):
 
@@ -98,10 +99,15 @@ Or add a project-scoped `.mcp.json` (checked into a repo Claude Code runs in):
 ### Tools exposed
 
 **Read:** `list_projects`, `list_work_packages`, `get_work_package`, `get_next_work_package`,
-`list_statuses`, `list_types`, `list_priorities`, `get_allowed_status_transitions`.
+`list_statuses`, `list_types`, `list_priorities`, `get_allowed_status_transitions`,
+`get_attachment` (images are returned as viewable image content; text files are inlined).
+
+**Boards:** `list_boards`, `get_board`, `list_board_column`, `get_next_board_card`
+(boards are status-based Kanban boards; each column is a saved query).
 
 **Write** (each supports a `dryRun` flag and honors global read-only mode):
-`add_comment`, `update_work_package_status`, `assign_work_package`, `log_time`.
+`add_comment`, `update_work_package_status`, `start_work_package` (move a WP to the start
+status, default "In progress" — call when you begin work), `assign_work_package`, `log_time`.
 
 Critical transitions in `protectedTransitions` are refused with a "human approval required"
 error, and work-package deletion is never exposed.
@@ -126,8 +132,23 @@ node packages/orchestrator/dist/cli.js reset
 ```
 
 `run` flags: `--project <id>`, `--types bug,feature`, `--limit <n>`, `--wp <id>`,
-`--dry-run` (default), `--write`, `--yes` (no per-WP prompt), `--max-turns <n>`, `--verbose`,
-`--config <path>`, `--template <path>`.
+`--board <name>`, `--column <name>`, `--dry-run` (default), `--write`, `--yes` (no per-WP
+prompt), `--max-turns <n>`, `--verbose`, `--config <path>`, `--template <path>`.
+
+### Board mode
+
+Instead of `filters.statuses`, you can drive the queue from a **board column**. Add a
+`board` block to the config (or pass `--board`/`--column`):
+
+```json
+"board": { "name": "MetaAdmin", "sourceColumn": "New" }
+```
+
+The queue is pulled from that column via its saved query (preserving board order), then
+still narrowed by `filters.types` / `filters.assignee`. Because these are status-based
+boards, advancing a card across columns is just a status change — so `statusFlow` already
+moves cards on the board. Board names are unique only within a project, so the board is
+resolved within `config.project`.
 
 **Per work package** the orchestrator: fetches full detail → renders
 [`templates/work-package.md`](templates/work-package.md) → runs `claude -p --output-format

@@ -15,6 +15,10 @@ export interface QueueOptions {
   types?: string[];
   /** Cap the number of work packages. */
   limit?: number;
+  /** Override the board name (enables board mode even without config.board). */
+  board?: string;
+  /** Override the board source column. */
+  column?: string;
 }
 
 function pickSummary(wp: {
@@ -50,6 +54,11 @@ export async function buildQueue(
     return [pickSummary(detail)];
   }
 
+  const boardName = options.board ?? config.board?.name;
+  if (boardName) {
+    return buildBoardQueue(client, config, state, options, boardName);
+  }
+
   const params: ListWorkPackagesParams = { sortBy: config.order as SortBy };
   if (options.types ?? config.filters.types) params.types = options.types ?? config.filters.types;
   if (config.filters.statuses) params.statuses = config.filters.statuses;
@@ -58,5 +67,37 @@ export async function buildQueue(
 
   const all = await client.listAllWorkPackages(config.project, params);
   const pending = all.filter((wp) => !state.isProcessed(wp.id));
+  return options.limit != null ? pending.slice(0, options.limit) : pending;
+}
+
+/** Board mode: pull cards from a board column (board order preserved via query_id),
+ * then narrow client-side by type / assignee=me and skip processed. */
+async function buildBoardQueue(
+  client: OpenProjectClient,
+  config: AppConfig,
+  state: StateStore,
+  options: QueueOptions,
+  boardName: string,
+): Promise<WorkPackageSummaryDTO[]> {
+  const board = await client.getBoard(boardName, config.project);
+  const columnName = options.column ?? config.board?.sourceColumn ?? board.columns[0]?.name;
+  const column = columnName
+    ? board.columns.find((c) => c.name.toLowerCase() === columnName.toLowerCase())
+    : board.columns[0];
+  if (!column) return [];
+
+  let cards = await client.listAllBoardColumnWorkPackages(config.project, column.queryId);
+
+  const types = options.types ?? config.filters.types;
+  if (types?.length) {
+    const set = new Set(types.map((t) => t.toLowerCase()));
+    cards = cards.filter((c) => c.type != null && set.has(c.type.toLowerCase()));
+  }
+  if (config.filters.assignee === 'me') {
+    const me = await client.getCurrentUser();
+    cards = cards.filter((c) => c.assignee === me.name);
+  }
+
+  const pending = cards.filter((c) => !state.isProcessed(c.id));
   return options.limit != null ? pending.slice(0, options.limit) : pending;
 }

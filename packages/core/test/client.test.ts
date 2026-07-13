@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { OpenProjectClient, UnprocessableError } from '@openproject-agent/core';
+import { NotFoundError, OpenProjectClient, UnprocessableError } from '@openproject-agent/core';
 import {
   activityHal,
   formHal,
@@ -162,5 +162,89 @@ describe('getWorkPackage assembly', () => {
     expect(wp.comments).toHaveLength(1);
     expect(wp.comments[0]?.comment).toBe('first comment');
     expect(wp.relations).toContainEqual(expect.objectContaining({ type: 'parent', targetId: 40 }));
+  });
+});
+
+describe('downloadAttachment', () => {
+  it('fetches the attachment resource then its binary content', async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    server.use(
+      http.get(`${BASE}/api/v3/attachments/52`, () =>
+        HttpResponse.json({
+          _type: 'Attachment',
+          id: 52,
+          fileName: '1.png',
+          contentType: 'image/png',
+          fileSize: 7,
+          _links: {
+            self: { href: '/api/v3/attachments/52' },
+            downloadLocation: { href: '/api/v3/attachments/52/content' },
+          },
+        }),
+      ),
+      http.get(`${BASE}/api/v3/attachments/52/content`, () =>
+        new HttpResponse(png, { headers: { 'Content-Type': 'image/png' } }),
+      ),
+    );
+    const att = await makeClient().downloadAttachment(52);
+    expect(att).toMatchObject({ id: 52, fileName: '1.png', contentType: 'image/png', fileSize: 7 });
+    expect(Buffer.isBuffer(att.data)).toBe(true);
+    expect(att.data.length).toBe(7);
+    expect(att.data[0]).toBe(0x89);
+  });
+});
+
+describe('boards', () => {
+  const gridsResponse = halCollection([
+    {
+      _type: 'Grid',
+      id: 18,
+      name: 'MetaAdmin',
+      _links: { scope: { href: '/projects/demo/boards' } },
+      widgets: [
+        { identifier: 'work_package_query', startColumn: 1, options: { queryId: 55, filters: [{ status_id: { operator: '=', values: ['1'] } }] } },
+        { identifier: 'work_package_query', startColumn: 2, options: { queryId: 56, filters: [{ status: { operator: '=', values: ['7'] } }] } },
+      ],
+    },
+    { _type: 'Grid', id: 11, name: null, _links: { scope: { href: '/my/page' } }, widgets: [] },
+  ]);
+  const statusesResponse = halCollection([statusHal(1, 'New'), statusHal(7, 'In progress')]);
+
+  it('lists boards with resolved columns, ignoring non-board grids', async () => {
+    server.use(
+      http.get(`${BASE}/api/v3/grids`, () => HttpResponse.json(gridsResponse)),
+      http.get(`${BASE}/api/v3/statuses`, () => HttpResponse.json(statusesResponse)),
+    );
+    const boards = await makeClient().listBoards('demo');
+    expect(boards).toHaveLength(1);
+    expect(boards[0]).toMatchObject({ id: 18, name: 'MetaAdmin', projectIdentifier: 'demo' });
+    expect(boards[0]?.columns).toEqual([
+      { name: 'New', queryId: 55, statusId: 1, position: 1 },
+      { name: 'In progress', queryId: 56, statusId: 7, position: 2 },
+    ]);
+  });
+
+  it('getBoard throws NotFoundError for an unknown board name', async () => {
+    server.use(
+      http.get(`${BASE}/api/v3/grids`, () => HttpResponse.json(gridsResponse)),
+      http.get(`${BASE}/api/v3/statuses`, () => HttpResponse.json(statusesResponse)),
+    );
+    await expect(makeClient().getBoard('Nope', 'demo')).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('runs a board column via query_id scoped to the project', async () => {
+    let queryId: string | null = null;
+    let scopedProject: string | undefined;
+    server.use(
+      http.get(`${BASE}/api/v3/projects/:pid/work_packages`, ({ request, params }) => {
+        queryId = new URL(request.url).searchParams.get('query_id');
+        scopedProject = params.pid as string;
+        return HttpResponse.json(halCollection([workPackageHal({ id: 287, subject: 'first' })], { total: 1 }));
+      }),
+    );
+    const page = await makeClient().listBoardColumnWorkPackages('demo', 55);
+    expect(queryId).toBe('55');
+    expect(scopedProject).toBe('demo');
+    expect(page.elements[0]?.id).toBe(287);
   });
 });

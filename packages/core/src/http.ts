@@ -148,6 +148,18 @@ export class HttpClient {
     throw lastError ?? new OpenProjectError('request failed after retries', 0);
   }
 
+  /** Download binary content from a HAL href (absolute or host-relative), following redirects. */
+  async getBinaryByHref(href: string): Promise<{ contentType: string | null; data: Buffer }> {
+    const url = /^https?:\/\//i.test(href) ? href : `${this.baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
+    const res = await this.doFetch(url, {
+      method: 'GET',
+      headers: { Authorization: this.authHeader, Accept: '*/*' },
+    });
+    if (!res.ok) throw errorFromResponse(res.status, await this.readErrorBody(res));
+    const data = Buffer.from(await res.arrayBuffer());
+    return { contentType: res.headers.get('content-type'), data };
+  }
+
   private async parseBody<T>(res: Response): Promise<T> {
     if (res.status === 204) return undefined as T;
     const text = await res.text();

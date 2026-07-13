@@ -79,12 +79,14 @@ function createClaudeRunner(
   deps: { logDir: string; logger: Logger; maxTurns: number },
 ): RunAgent {
   const serverPath = resolveMcpServerBin();
-  return async ({ wp, prompt, dryRun }) => {
+  // The sub-agent only READS OpenProject (for context/attachments); the orchestrator
+  // owns all OpenProject writes. So its MCP server is always read-only.
+  return async ({ wp, prompt }) => {
     const mcpConfig = buildMcpConfig({
       serverPath,
       url: config.openproject.url,
       apiKey: config.openproject.apiKey,
-      readOnly: dryRun,
+      readOnly: true,
       protectedTransitions: config.protectedTransitions,
     });
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'op-agent-'));
@@ -109,7 +111,7 @@ function createClaudeRunner(
           ...process.env,
           OPENPROJECT_URL: config.openproject.url,
           OPENPROJECT_API_KEY: config.openproject.apiKey,
-          OPENPROJECT_READONLY: String(dryRun),
+          OPENPROJECT_READONLY: 'true',
           OPENPROJECT_PROTECTED_TRANSITIONS: config.protectedTransitions.join(','),
         },
         onLine: (raw) => logStream.write(raw + '\n'),
@@ -155,6 +157,8 @@ program
   .option('--types <list>', 'comma-separated type names (override)')
   .option('--limit <n>', 'max work packages')
   .option('--wp <id>', 'process a single work package')
+  .option('--board <name>', 'pull the queue from a board column')
+  .option('--column <name>', 'board source column (default: leftmost)')
   .option('--dry-run', 'run Claude Code but do not write to OpenProject (default)')
   .option('--write', 'enable writes to OpenProject')
   .option('--yes', 'do not prompt before each work package')
@@ -192,6 +196,8 @@ program
             ...(opts.wp ? { wp: Number(opts.wp) } : {}),
             ...(opts.types ? { types: splitList(opts.types) } : {}),
             ...(opts.limit ? { limit: Number(opts.limit) } : {}),
+            ...(opts.board ? { board: opts.board } : {}),
+            ...(opts.column ? { column: opts.column } : {}),
           },
         );
         printSummary(summary);
@@ -211,6 +217,8 @@ program
   .option('--types <list>', 'comma-separated type names (override)')
   .option('--limit <n>', 'max work packages')
   .option('--wp <id>', 'single work package')
+  .option('--board <name>', 'pull the queue from a board column')
+  .option('--column <name>', 'board source column (default: leftmost)')
   .option('--verbose', 'verbose logging')
   .action(async (opts) => {
     try {
@@ -219,6 +227,8 @@ program
         ...(opts.wp ? { wp: Number(opts.wp) } : {}),
         ...(opts.types ? { types: splitList(opts.types) } : {}),
         ...(opts.limit ? { limit: Number(opts.limit) } : {}),
+        ...(opts.board ? { board: opts.board } : {}),
+        ...(opts.column ? { column: opts.column } : {}),
       });
       if (queue.length === 0) {
         process.stdout.write('Queue is empty.\n');

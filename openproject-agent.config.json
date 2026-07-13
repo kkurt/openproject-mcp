@@ -7,8 +7,11 @@
   "targetRepo": "/absolute/path/to/target/repo",
   "filters": {
     "types": ["Bug", "Feature"],
-    "statuses": ["New", "In specification", "Confirmed"],
     "assignee": "me"
+  },
+  "board": {
+    "name": "MetaAdmin",
+    "sourceColumn": "New"
   },
   "order": [
     ["priority", "desc"],
@@ -25,7 +28,7 @@
     "binPath": "claude",
     "maxTurns": 40,
     "timeoutMs": 1800000,
-    "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(npm test:*)"],
+    "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(npm test:*)", "mcp__openproject"],
     "disallowedTools": ["Bash(git:*)"],
     "addDirs": []
   }

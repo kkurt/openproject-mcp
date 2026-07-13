@@ -12,6 +12,7 @@ async function main(): Promise<void> {
     client,
     readOnly: config.readOnly,
     protectedTransitions: config.protectedTransitions,
+    startStatus: config.startStatus,
   });
   await server.connect(new StdioServerTransport());
   // stdout is reserved for the MCP protocol; all logs go to stderr.

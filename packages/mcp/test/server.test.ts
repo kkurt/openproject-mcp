@@ -49,6 +49,23 @@ function makeMockClient(overrides: Record<string, unknown> = {}) {
     updateStatus: vi.fn(async () => summary),
     assign: vi.fn(async () => summary),
     logTime: vi.fn(async () => undefined),
+    downloadAttachment: vi.fn(async () => ({
+      id: 52,
+      fileName: '1.png',
+      contentType: 'image/png',
+      fileSize: 7,
+      data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
+    })),
+    listBoards: vi.fn(async () => [
+      { id: 18, name: 'MetaAdmin', projectIdentifier: 'demo', columns: [{ name: 'New', queryId: 55, statusId: 1, position: 1 }] },
+    ]),
+    getBoard: vi.fn(async () => ({
+      id: 18,
+      name: 'MetaAdmin',
+      projectIdentifier: 'demo',
+      columns: [{ name: 'New', queryId: 55, statusId: 1, position: 1 }],
+    })),
+    listBoardColumnWorkPackages: vi.fn(async () => ({ total: 1, count: 1, pageSize: 50, offset: 1, elements: [summary] })),
     ...overrides,
   };
 }
@@ -68,6 +85,7 @@ async function harness(
     client: mock as unknown as OpenProjectClient,
     readOnly: opts.readOnly ?? false,
     protectedTransitions: opts.protectedTransitions ?? ['Closed', 'Rejected'],
+    startStatus: 'In progress',
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const mcpClient = new Client({ name: 'test', version: '0.0.0' });
@@ -81,9 +99,9 @@ async function harness(
 
 async function call(mcpClient: Client, name: string, args: Record<string, unknown> = {}) {
   const res = await mcpClient.callTool({ name, arguments: args });
-  const content = res.content as Array<{ type: string; text: string }>;
-  const text = content[0]?.text ?? '';
-  return { isError: res.isError === true, text, json: () => JSON.parse(text) as Record<string, unknown> };
+  const content = res.content as Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+  const text = content.find((c) => c.type === 'text')?.text ?? '';
+  return { isError: res.isError === true, text, content, json: () => JSON.parse(text) as Record<string, unknown> };
 }
 
 describe('tool registration', () => {
@@ -96,14 +114,20 @@ describe('tool registration', () => {
         'add_comment',
         'assign_work_package',
         'get_allowed_status_transitions',
+        'get_attachment',
+        'get_board',
+        'get_next_board_card',
         'get_next_work_package',
         'get_work_package',
+        'list_board_column',
+        'list_boards',
         'list_priorities',
         'list_projects',
         'list_statuses',
         'list_types',
         'list_work_packages',
         'log_time',
+        'start_work_package',
         'update_work_package_status',
       ].sort(),
     );
@@ -191,5 +215,92 @@ describe('status transition safety', () => {
     const { mcpClient } = await harness();
     const { json } = await call(mcpClient, 'get_allowed_status_transitions', { workPackageId: 42 });
     expect(json()).toEqual([{ id: 12, name: 'In progress' }]);
+  });
+
+  it('start_work_package moves the WP to the configured start status', async () => {
+    const { mcpClient, mock } = await harness();
+    const { json } = await call(mcpClient, 'start_work_package', { workPackageId: 42 });
+    expect(json()).toMatchObject({ ok: true });
+    expect(mock.updateStatus).toHaveBeenCalledWith(42, 'In progress');
+  });
+
+  it('start_work_package dryRun previews without writing', async () => {
+    const { mcpClient, mock } = await harness();
+    const { json } = await call(mcpClient, 'start_work_package', { workPackageId: 42, dryRun: true });
+    expect(json()).toMatchObject({ dryRun: true, wouldTransitionTo: 'In progress' });
+    expect(mock.updateStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('get_attachment', () => {
+  it('returns an image as a viewable image content block', async () => {
+    const { mcpClient } = await harness();
+    const { content } = await call(mcpClient, 'get_attachment', { attachmentId: 52 });
+    const image = content.find((c) => c.type === 'image');
+    expect(image?.mimeType).toBe('image/png');
+    expect(typeof image?.data).toBe('string');
+  });
+
+  it('inlines a text attachment', async () => {
+    const { mcpClient } = await harness({
+      client: {
+        downloadAttachment: vi.fn(async () => ({
+          id: 9,
+          fileName: 'error.log',
+          contentType: 'text/plain',
+          fileSize: 5,
+          data: Buffer.from('boom!'),
+        })),
+      },
+    });
+    const { text } = await call(mcpClient, 'get_attachment', { attachmentId: 9 });
+    expect(text).toContain('error.log');
+    expect(text).toContain('boom!');
+  });
+
+  it('does not inline an oversized attachment', async () => {
+    const { mcpClient } = await harness({
+      client: {
+        downloadAttachment: vi.fn(async () => ({
+          id: 9,
+          fileName: 'big.bin',
+          contentType: 'application/octet-stream',
+          fileSize: 100,
+          data: Buffer.alloc(100),
+        })),
+      },
+    });
+    const { text } = await call(mcpClient, 'get_attachment', { attachmentId: 9, maxBytes: 10 });
+    expect(text).toMatch(/not inlined/);
+  });
+});
+
+describe('board tools', () => {
+  it('list_boards returns boards with columns', async () => {
+    const { mcpClient } = await harness();
+    const { json } = await call(mcpClient, 'list_boards', {});
+    expect(json()).toMatchObject([{ name: 'MetaAdmin', columns: [{ name: 'New', queryId: 55 }] }]);
+  });
+
+  it('list_board_column returns the column cards via its queryId', async () => {
+    const { mcpClient, mock } = await harness();
+    const { json } = await call(mcpClient, 'list_board_column', {
+      projectId: 'demo',
+      boardName: 'MetaAdmin',
+      columnName: 'New',
+    });
+    expect(json()).toMatchObject({ board: 'MetaAdmin', column: 'New', workPackages: [summary] });
+    expect(mock.listBoardColumnWorkPackages).toHaveBeenCalledWith('demo', 55, expect.anything());
+  });
+
+  it('list_board_column errors for an unknown column', async () => {
+    const { mcpClient } = await harness();
+    const { isError, text } = await call(mcpClient, 'list_board_column', {
+      projectId: 'demo',
+      boardName: 'MetaAdmin',
+      columnName: 'Nope',
+    });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/no column/i);
   });
 });

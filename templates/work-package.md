@@ -28,6 +28,10 @@ and to a professional standard.
 
 {{attachments}}
 
+If an attachment looks relevant (e.g. a screenshot of the error or a log file),
+call the `get_attachment` tool with its id (the number after `#`) to view the
+image or read the text before deciding what to do.
+
 ## How to work in this repository
 
 1. If a `CLAUDE.md` exists, read it first and follow it.

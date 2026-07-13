@@ -1,9 +1,48 @@
 /** Write MCP tools. Every tool honors `dryRun` and the global read-only mode. */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { errorResult, isProtectedTransition, jsonResult, type ToolContext } from './context.js';
 
 const READ_ONLY_MSG = 'Server is in read-only mode; this write was refused. Re-run with dryRun to preview instead.';
+
+/** Shared status-transition logic: resolve target, block protected/disallowed, honor dryRun/read-only. */
+async function transitionStatus(
+  ctx: ToolContext,
+  workPackageId: number,
+  status: string,
+  dryRun: boolean | undefined,
+): Promise<CallToolResult> {
+  const statuses = await ctx.client.listStatuses();
+  const target = /^\d+$/.test(status)
+    ? statuses.find((s) => s.id === Number(status))
+    : statuses.find((s) => s.name.toLowerCase() === status.toLowerCase());
+  const targetName = target?.name ?? status;
+
+  if (isProtectedTransition(ctx.protectedTransitions, targetName)) {
+    return errorResult(
+      `Refusing to transition WP ${workPackageId} to '${targetName}': this is a PROTECTED transition that ` +
+        `requires human approval. (Protected: ${ctx.protectedTransitions.join(', ')}.)`,
+    );
+  }
+
+  const allowed = await ctx.client.getAllowedStatusTransitions(workPackageId);
+  const permitted = allowed.some((a) =>
+    target ? a.id === target.id : a.name.toLowerCase() === targetName.toLowerCase(),
+  );
+  if (allowed.length > 0 && !permitted) {
+    return errorResult(
+      `Transition to '${targetName}' is not allowed for WP ${workPackageId}. ` +
+        `Allowed: ${allowed.map((a) => a.name).join(', ') || '(none)'}.`,
+    );
+  }
+
+  if (dryRun) {
+    return jsonResult({ dryRun: true, action: 'update_status', workPackageId, wouldTransitionTo: targetName, allowedTransitions: allowed });
+  }
+  if (ctx.readOnly) return errorResult(READ_ONLY_MSG);
+  return jsonResult({ ok: true, workPackage: await ctx.client.updateStatus(workPackageId, status) });
+}
 
 export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
   server.registerTool(
@@ -37,37 +76,22 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         dryRun: z.boolean().optional(),
       },
     },
-    async ({ workPackageId, status, dryRun }) => {
-      const statuses = await ctx.client.listStatuses();
-      const target = /^\d+$/.test(status)
-        ? statuses.find((s) => s.id === Number(status))
-        : statuses.find((s) => s.name.toLowerCase() === status.toLowerCase());
-      const targetName = target?.name ?? status;
+    async ({ workPackageId, status, dryRun }) => transitionStatus(ctx, workPackageId, status, dryRun),
+  );
 
-      if (isProtectedTransition(ctx.protectedTransitions, targetName)) {
-        return errorResult(
-          `Refusing to transition WP ${workPackageId} to '${targetName}': this is a PROTECTED transition that ` +
-            `requires human approval. (Protected: ${ctx.protectedTransitions.join(', ')}.)`,
-        );
-      }
-
-      const allowed = await ctx.client.getAllowedStatusTransitions(workPackageId);
-      const permitted = allowed.some((a) =>
-        target ? a.id === target.id : a.name.toLowerCase() === targetName.toLowerCase(),
-      );
-      if (allowed.length > 0 && !permitted) {
-        return errorResult(
-          `Transition to '${targetName}' is not allowed for WP ${workPackageId}. ` +
-            `Allowed: ${allowed.map((a) => a.name).join(', ') || '(none)'}.`,
-        );
-      }
-
-      if (dryRun) {
-        return jsonResult({ dryRun: true, action: 'update_status', workPackageId, wouldTransitionTo: targetName, allowedTransitions: allowed });
-      }
-      if (ctx.readOnly) return errorResult(READ_ONLY_MSG);
-      return jsonResult({ ok: true, workPackage: await ctx.client.updateStatus(workPackageId, status) });
+  server.registerTool(
+    'start_work_package',
+    {
+      title: 'Start work package',
+      description:
+        `Mark a work package as started by moving it to the "${ctx.startStatus}" status. ` +
+        'Call this as soon as you begin working on a work package. Honors dryRun and refuses protected transitions.',
+      inputSchema: {
+        workPackageId: z.number().int().positive(),
+        dryRun: z.boolean().optional(),
+      },
     },
+    async ({ workPackageId, dryRun }) => transitionStatus(ctx, workPackageId, ctx.startStatus, dryRun),
   );
 
   server.registerTool(

@@ -1,0 +1,23 @@
+{
+  "name": "@openproject-agent/orchestrator",
+  "version": "0.1.0",
+  "description": "CLI that runs headless Claude Code against OpenProject work packages.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "openproject-agent": "./dist/cli.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node ./dist/cli.js"
+  },
+  "dependencies": {
+    "@openproject-agent/core": "workspace:*",
+    "@openproject-agent/mcp": "workspace:*",
+    "commander": "^15.0.0",
+    "dotenv": "^16.4.7",
+    "zod": "^4.4.3"
+  }
+}

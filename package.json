@@ -1,0 +1,29 @@
+{
+  "name": "openproject-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Monorepo: an OpenProject MCP server + an orchestrator that runs headless Claude Code against work packages.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build",
+    "clean": "tsc --build --clean",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.18.0",
+    "globals": "^15.14.0",
+    "msw": "^2.15.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^4.1.0"
+  }
+}

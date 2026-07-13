@@ -1,0 +1,6 @@
+packages:
+  - 'packages/*'
+# msw's postinstall only builds the browser service worker; we only use msw/node
+# for tests, so its build script is intentionally not run.
+allowBuilds:
+  msw: false

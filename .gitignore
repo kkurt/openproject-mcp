@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Env & secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Orchestrator runtime state & logs
+.openproject-agent/
+
+# Local config with real values (keep the example)
+openproject-agent.config.local.json
+
+# Tooling caches
+.eslintcache
+coverage/
+
+# Local AI dev tooling, caches, and editor history (pre-existing; not part of this project)
+.claude/
+.claude-flow/
+.codegraph/
+.serena/
+.history/
+CLAUDE.md
+
+# OS / editor
+.DS_Store
+Thumbs.db

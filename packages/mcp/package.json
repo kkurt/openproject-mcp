@@ -1,0 +1,28 @@
+{
+  "name": "@openproject-agent/mcp",
+  "version": "0.1.0",
+  "description": "MCP (stdio) server exposing OpenProject API v3 to Claude Code.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "openproject-mcp": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node ./dist/bin.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openproject-agent/core": "workspace:*",
+    "zod": "^4.4.3"
+  }
+}

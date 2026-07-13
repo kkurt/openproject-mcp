@@ -1,0 +1,32 @@
+{
+  "openproject": {
+    "url": "https://openproject.example.com",
+    "apiKey": "env:OPENPROJECT_API_KEY"
+  },
+  "project": "testproject",
+  "targetRepo": "/absolute/path/to/target/repo",
+  "filters": {
+    "types": ["Bug", "Feature"],
+    "statuses": ["New", "In specification", "Confirmed"],
+    "assignee": "me"
+  },
+  "order": [
+    ["priority", "desc"],
+    ["id", "asc"]
+  ],
+  "statusFlow": {
+    "start": "In progress",
+    "success": "Developed",
+    "blocked": "On hold"
+  },
+  "protectedTransitions": ["Closed", "Rejected"],
+  "write": false,
+  "claude": {
+    "binPath": "claude",
+    "maxTurns": 40,
+    "timeoutMs": 1800000,
+    "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(npm test:*)"],
+    "disallowedTools": ["Bash(git:*)"],
+    "addDirs": []
+  }
+}

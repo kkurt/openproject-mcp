@@ -1,0 +1,231 @@
+/**
+ * HAL+JSON -> compact DTO mappers. Each mapper strips `_links`/`_embedded` noise
+ * and resolves link titles / hrefs into flat fields.
+ */
+import type {
+  AttachmentDTO,
+  CommentDTO,
+  Formattable,
+  HalLink,
+  HalResource,
+  PriorityDTO,
+  ProjectDTO,
+  RelationDTO,
+  StatusDTO,
+  TypeDTO,
+  UserDTO,
+  WorkPackageDetailDTO,
+  WorkPackageSummaryDTO,
+} from './types.js';
+
+// --- link helpers -----------------------------------------------------------
+
+function singleLink(res: HalResource, key: string): HalLink | undefined {
+  const link = res._links?.[key];
+  if (Array.isArray(link)) return link[0];
+  return link ?? undefined;
+}
+
+function linkTitle(res: HalResource, key: string): string | null {
+  return singleLink(res, key)?.title ?? null;
+}
+
+function linkHref(res: HalResource, key: string): string | null {
+  return singleLink(res, key)?.href ?? null;
+}
+
+/** Extract the trailing numeric id from a HAL href like `/api/v3/statuses/7`. */
+export function idFromHref(href: string | null | undefined): number | null {
+  if (!href) return null;
+  const match = /\/(\d+)(?:\/[^/]*)?\/?$/.exec(href);
+  return match ? Number(match[1]) : null;
+}
+
+function absolutize(baseUrl: string, href: string | null): string | null {
+  if (!href) return null;
+  if (/^https?:\/\//i.test(href)) return href;
+  return `${baseUrl}${href.startsWith('/') ? '' : '/'}${href}`;
+}
+
+function raw(value: unknown): string | null {
+  if (value && typeof value === 'object' && 'raw' in (value as object)) {
+    return (value as Formattable).raw ?? null;
+  }
+  return null;
+}
+
+function num(value: unknown): number | null {
+  return typeof value === 'number' ? value : null;
+}
+
+function str(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+export function workPackageWebUrl(baseUrl: string, id: number): string {
+  return `${baseUrl}/work_packages/${id}`;
+}
+
+// --- resource mappers -------------------------------------------------------
+
+export function mapProject(hal: HalResource, baseUrl: string): ProjectDTO {
+  const id = hal.id ?? idFromHref(linkHref(hal, 'self')) ?? 0;
+  return {
+    id,
+    identifier: str(hal['identifier']) ?? '',
+    name: str(hal['name']) ?? '',
+    active: typeof hal['active'] === 'boolean' ? (hal['active'] as boolean) : null,
+    description: raw(hal['description']),
+    url: `${baseUrl}/projects/${str(hal['identifier']) ?? id}`,
+  };
+}
+
+export function mapWorkPackageSummary(hal: HalResource, baseUrl: string): WorkPackageSummaryDTO {
+  const id = hal.id ?? idFromHref(linkHref(hal, 'self')) ?? 0;
+  return {
+    id,
+    type: linkTitle(hal, 'type'),
+    subject: str(hal['subject']) ?? '',
+    status: linkTitle(hal, 'status'),
+    priority: linkTitle(hal, 'priority'),
+    assignee: linkTitle(hal, 'assignee'),
+    updatedAt: str(hal['updatedAt']),
+    url: workPackageWebUrl(baseUrl, id),
+  };
+}
+
+export function mapComment(hal: HalResource): CommentDTO {
+  return {
+    id: hal.id ?? 0,
+    author: linkTitle(hal, 'user'),
+    comment: raw(hal['comment']) ?? '',
+    createdAt: str(hal['createdAt']),
+  };
+}
+
+export function mapRelation(hal: HalResource, currentWorkPackageId: number): RelationDTO {
+  const fromHref = linkHref(hal, 'from');
+  const fromId = idFromHref(fromHref);
+  const otherKey = fromId === currentWorkPackageId ? 'to' : 'from';
+  const other = singleLink(hal, otherKey);
+  return {
+    id: hal.id ?? 0,
+    type: str(hal['type']) ?? 'relates',
+    targetId: idFromHref(other?.href),
+    targetSubject: other?.title ?? null,
+    description: str(hal['description']),
+  };
+}
+
+export function mapAttachment(hal: HalResource, baseUrl: string): AttachmentDTO {
+  const download = linkHref(hal, 'downloadLocation') ?? linkHref(hal, 'staticDownloadLocation');
+  return {
+    id: hal.id ?? 0,
+    fileName: str(hal['fileName']) ?? '',
+    fileSize: num(hal['fileSize']),
+    contentType: str(hal['contentType']),
+    downloadUrl: absolutize(baseUrl, download),
+  };
+}
+
+export function mapStatus(hal: HalResource): StatusDTO {
+  return {
+    id: hal.id ?? idFromHref(linkHref(hal, 'self')) ?? 0,
+    name: str(hal['name']) ?? '',
+    isClosed: typeof hal['isClosed'] === 'boolean' ? (hal['isClosed'] as boolean) : null,
+  };
+}
+
+export function mapType(hal: HalResource): TypeDTO {
+  return { id: hal.id ?? idFromHref(linkHref(hal, 'self')) ?? 0, name: str(hal['name']) ?? '' };
+}
+
+export function mapPriority(hal: HalResource): PriorityDTO {
+  return { id: hal.id ?? idFromHref(linkHref(hal, 'self')) ?? 0, name: str(hal['name']) ?? '' };
+}
+
+export function mapUser(hal: HalResource): UserDTO {
+  return {
+    id: hal.id ?? idFromHref(linkHref(hal, 'self')) ?? 0,
+    name: str(hal['name']) ?? '',
+    login: str(hal['login']),
+    email: str(hal['email']),
+  };
+}
+
+// --- work package detail assembly ------------------------------------------
+
+function collectCustomFields(hal: HalResource): Record<string, unknown> {
+  const custom: Record<string, unknown> = {};
+  const re = /^customField\d+$/;
+  for (const [key, value] of Object.entries(hal)) {
+    if (re.test(key)) custom[key] = raw(value) ?? value;
+  }
+  if (hal._links) {
+    for (const [key, value] of Object.entries(hal._links)) {
+      if (re.test(key) && value && !Array.isArray(value)) {
+        custom[key] = (value as HalLink).title ?? (value as HalLink).href;
+      }
+    }
+  }
+  return custom;
+}
+
+function parentChildRelations(hal: HalResource): RelationDTO[] {
+  const relations: RelationDTO[] = [];
+  const parent = singleLink(hal, 'parent');
+  if (parent?.href) {
+    relations.push({
+      id: 0,
+      type: 'parent',
+      targetId: idFromHref(parent.href),
+      targetSubject: parent.title ?? null,
+      description: null,
+    });
+  }
+  const children = hal._links?.['children'];
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      relations.push({
+        id: 0,
+        type: 'child',
+        targetId: idFromHref(child.href),
+        targetSubject: child.title ?? null,
+        description: null,
+      });
+    }
+  }
+  return relations;
+}
+
+export interface WorkPackageDetailParts {
+  comments: CommentDTO[];
+  relations: RelationDTO[];
+  attachments: AttachmentDTO[];
+}
+
+export function mapWorkPackageDetail(
+  hal: HalResource,
+  parts: WorkPackageDetailParts,
+  baseUrl: string,
+): WorkPackageDetailDTO {
+  const summary = mapWorkPackageSummary(hal, baseUrl);
+  const projectHref = linkHref(hal, 'project');
+  return {
+    ...summary,
+    description: raw(hal['description']),
+    project: projectHref
+      ? { id: idFromHref(projectHref), name: linkTitle(hal, 'project') }
+      : null,
+    author: linkTitle(hal, 'author'),
+    createdAt: str(hal['createdAt']),
+    startDate: str(hal['startDate']),
+    dueDate: str(hal['dueDate']),
+    estimatedHours: num(hal['estimatedHours']),
+    lockVersion: num(hal['lockVersion']) ?? 0,
+    customFields: collectCustomFields(hal),
+    comments: parts.comments,
+    relations: [...parentChildRelations(hal), ...parts.relations],
+    attachments: parts.attachments,
+  };
+}

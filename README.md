@@ -11,6 +11,10 @@ A pnpm monorepo that connects **OpenProject** to **Claude Code**:
 The design goal is **safe, authorized automation**: dry-run by default, protected status
 transitions blocked, no git operations, secrets never logged.
 
+> **Unofficial community project.** Not affiliated with, endorsed by, or sponsored by
+> OpenProject GmbH or Anthropic PBC. OpenProject, Claude and Claude Code are trademarks of
+> their respective owners.
+
 ---
 
 ## Prerequisites
@@ -53,6 +57,8 @@ HTTP Basic **password** with the fixed username `apikey`
    - `protectedTransitions` — statuses that always require human approval (default `Closed`, `Rejected`).
    - `claude.allowedTools` / `disallowedTools` — the tools spawned Claude Code may use.
    - `claude.maxTurns` — turn cap (see note below).
+   - `commentFooter` — Markdown appended to every result comment (defaults to an English
+     "produced by an AI agent, must be reviewed by a human" note; `""` omits it).
 
    `apiKey` is written as `"env:OPENPROJECT_API_KEY"` and resolved from the environment; the
    raw key is never stored in the config file.
@@ -61,31 +67,50 @@ HTTP Basic **password** with the fixed username `apikey`
 
 ## Use the MCP server with Claude Code
 
-Build first (`pnpm build`), then register the stdio server. The path below points at the
-built bin:
+Build first (`pnpm build`). Then register the stdio server — **prefer `-s user` scope**
+(one registration, available in every project, immune to the Windows drive-letter-casing
+pitfall described in Troubleshooting):
 
-```bash
-claude mcp add openproject \
-  -e OPENPROJECT_URL=https://openproject.example.com \
-  -e OPENPROJECT_API_KEY=your-api-key \
-  -- node ./packages/mcp/dist/bin.js
+**Windows (PowerShell — single line):**
+
+```powershell
+claude mcp add openproject -s user -e OPENPROJECT_URL=https://openproject.example.com -e OPENPROJECT_API_KEY=your-api-key -- node C:/absolute/path/to/openproject-mcp/packages/mcp/dist/bin.js
 ```
 
-Optional env: `OPENPROJECT_READONLY=true` (block all writes),
+**macOS/Linux (bash):**
+
+```bash
+claude mcp add openproject -s user \
+  -e OPENPROJECT_URL=https://openproject.example.com \
+  -e OPENPROJECT_API_KEY=your-api-key \
+  -- node /absolute/path/to/openproject-mcp/packages/mcp/dist/bin.js
+```
+
+> ⚠️ **Start a NEW Claude Code session after registering.** MCP tools are snapshotted at
+> session start — an already-open chat will never gain the `mcp__openproject__*` tools,
+> even if `claude mcp list` says Connected.
+
+**Both env vars are mandatory** (`OPENPROJECT_URL`, `OPENPROJECT_API_KEY`) — but if either
+is missing from the registration, the server falls back to a `.env` file, searched in this
+order: `$OPENPROJECT_ENV_FILE`, `./.env` (cwd), the package's `.env`, this repo's `.env`.
+Set `OPENPROJECT_NO_ENV_FILE=1` to disable the fallback. Optional env:
+`OPENPROJECT_READONLY=true` (block all writes),
 `OPENPROJECT_PROTECTED_TRANSITIONS=Closed,Rejected`, and `OPENPROJECT_START_STATUS="In progress"`
 (the status `start_work_package` moves a work package to).
 
-Or add a project-scoped `.mcp.json` (checked into a repo Claude Code runs in):
+Or add a project-scoped `.mcp.json` (checked into a repo Claude Code runs in). Use
+`${VAR}` expansion so the key never lands in a committed file, and note the server must
+also be approved via `enabledMcpjsonServers` in that repo's `.claude/settings.local.json`:
 
 ```json
 {
   "mcpServers": {
     "openproject": {
       "command": "node",
-      "args": ["/absolute/path/to/openproject-mcp/packages/mcp/dist/bin.js"],
+      "args": ["C:/absolute/path/to/openproject-mcp/packages/mcp/dist/bin.js"],
       "env": {
         "OPENPROJECT_URL": "https://openproject.example.com",
-        "OPENPROJECT_API_KEY": "your-api-key",
+        "OPENPROJECT_API_KEY": "${OPENPROJECT_API_KEY}",
         "OPENPROJECT_READONLY": "true"
       }
     }
@@ -93,13 +118,41 @@ Or add a project-scoped `.mcp.json` (checked into a repo Claude Code runs in):
 }
 ```
 
-> Prefer environment variables over hard-coding the API key in `.mcp.json`; if you must,
-> keep that file out of version control.
+> Set the referenced variable once per machine (Windows: `setx OPENPROJECT_API_KEY "..."`,
+> then open a **new** terminal). Never commit a literal key. Pick exactly ONE registration
+> path (user scope **or** `.mcp.json`) — duplicate registrations across scopes make
+> failures very hard to diagnose. When you remove a `.mcp.json` entry, also remove the
+> stale name from `enabledMcpjsonServers`.
+
+### Troubleshooting
+
+**First step, always:** run the built-in self-test in a real terminal —
+
+```powershell
+node C:/absolute/path/to/openproject-mcp/packages/mcp/dist/bin.js --doctor
+```
+
+It prints which `OPENPROJECT_*` vars are set (masked), where `.env` was searched/loaded,
+performs a live auth + project-listing round-trip, and ends with a one-line fix hint.
+
+- **"Failed to connect"** — the server process crashed at startup. Almost always a missing
+  `OPENPROJECT_URL`/`OPENPROJECT_API_KEY` in the registration env (and no `.env` found).
+  `--doctor` shows exactly what is missing.
+- **Tools missing in an open session** — tools load at session start; start a new session.
+- **`claude mcp list` says Connected but the session says "Server not found"** (Windows) —
+  drive-letter casing split-brain: `~/.claude.json` can hold *two* project entries for the
+  same folder (`C:/...` and `c:/...`), and the registration may have landed in the one your
+  session doesn't use. Fix: register with `-s user` (project-independent), and remove the
+  duplicates (`claude mcp remove openproject -s local` run from the affected project).
+- **Verifying inside a session** — run `/mcp` in Claude Code to see connected servers and
+  their tools.
 
 ### Tools exposed
 
 **Read:** `list_projects`, `list_work_packages`, `get_work_package`, `get_next_work_package`,
 `list_statuses`, `list_types`, `list_priorities`, `get_allowed_status_transitions`,
+`get_journal` (full change history incl. "Status changed from X to Y" lines),
+`get_work_package_schema` (field types, required/writable, custom fields),
 `get_attachment` (images are returned as viewable image content; text files are inlined).
 
 **Boards:** `list_boards`, `get_board`, `list_board_column`, `get_next_board_card`
@@ -107,7 +160,8 @@ Or add a project-scoped `.mcp.json` (checked into a repo Claude Code runs in):
 
 **Write** (each supports a `dryRun` flag and honors global read-only mode):
 `add_comment`, `update_work_package_status`, `start_work_package` (move a WP to the start
-status, default "In progress" — call when you begin work), `assign_work_package`, `log_time`.
+status, default "In progress" — call when you begin work), `create_work_package`,
+`assign_work_package`, `log_time`.
 
 Critical transitions in `protectedTransitions` are refused with a "human approval required"
 error, and work-package deletion is never exposed.
@@ -141,7 +195,7 @@ Instead of `filters.statuses`, you can drive the queue from a **board column**. 
 `board` block to the config (or pass `--board`/`--column`):
 
 ```json
-"board": { "name": "MetaAdmin", "sourceColumn": "New" }
+"board": { "name": "Kanban", "sourceColumn": "New" }
 ```
 
 The queue is pulled from that column via its saved query (preserving board order), then
@@ -195,3 +249,7 @@ openproject-agent.config.json
 `pnpm test` runs the full suite with **msw**-mocked HTTP and an in-memory MCP client — no
 live OpenProject or Claude Code process is needed. `pnpm build` (tsc) and `pnpm lint` must
 also pass.
+
+## License
+
+[MIT](LICENSE) © 2026 Kürşat Kurt

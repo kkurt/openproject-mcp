@@ -69,6 +69,53 @@ export interface CommentDTO {
   createdAt: string | null;
 }
 
+/** One journal entry (activity), including non-comment change entries. */
+export interface ActivityDTO {
+  id: number;
+  /** 'comment' when the entry carries a user comment, else 'change'. */
+  kind: 'comment' | 'change';
+  author: string | null;
+  authorId: number | null;
+  /** Raw comment text ('' for pure change entries). */
+  comment: string;
+  /** Human-readable change lines, e.g. "Status changed from New to Developed". */
+  details: string[];
+  version: number | null;
+  internal: boolean | null;
+  createdAt: string | null;
+}
+
+/** Compact work-package form/schema field description. */
+export interface SchemaFieldDTO {
+  key: string;
+  name: string;
+  type: string;
+  required: boolean;
+  writable: boolean;
+}
+
+export interface WorkPackageSchemaDTO {
+  /** e.g. "6-7" (projectId-typeId). */
+  id: string;
+  fields: SchemaFieldDTO[];
+  /** The subset of fields that are custom fields (customField<N>). */
+  customFields: SchemaFieldDTO[];
+}
+
+export interface CreateWorkPackageParams {
+  /** Type name or id (e.g. "Bug"). */
+  type: string;
+  subject: string;
+  /** Markdown description. */
+  description?: string;
+  /** "me" or a numeric user id. */
+  assignee?: string;
+  /** Priority name or id. */
+  priority?: string;
+  /** Parent work package id. */
+  parentId?: number;
+}
+
 export interface RelationDTO {
   /** Relation id (0 for parent/child pseudo-relations derived from _links). */
   id: number;

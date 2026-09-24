@@ -123,6 +123,27 @@ describe('runOrchestrator', () => {
     expect(state.get(42)?.status).toBe('done');
   });
 
+  it('ends the result comment with the default English AI footer', async () => {
+    const client = makeClient([summary(42)]);
+    await runOrchestrator(deps(client, makeConfig(), agentReturning('{"result":"done"}')), { dryRun: false, yes: true });
+
+    expect(client.addComment.mock.calls[0]?.[1]).toMatch(/\n---\n_This change was produced by an AI agent.*_$/);
+  });
+
+  it('uses the configured commentFooter, and omits the footer when it is empty', async () => {
+    const custom = makeClient([summary(42)]);
+    const runAgent = agentReturning('{"result":"done"}');
+    await runOrchestrator(deps(custom, makeConfig({ commentFooter: '_custom note_' }), runAgent), {
+      dryRun: false,
+      yes: true,
+    });
+    expect(custom.addComment.mock.calls[0]?.[1]).toMatch(/\n---\n_custom note_$/);
+
+    const none = makeClient([summary(43)]);
+    await runOrchestrator(deps(none, makeConfig({ commentFooter: '' }), runAgent), { dryRun: false, yes: true });
+    expect(none.addComment.mock.calls[0]?.[1]).not.toContain('---');
+  });
+
   it('blocked result advances to the blocked status', async () => {
     const client = makeClient([summary(42)]);
     const runAgent = agentReturning('{"result":"blocked","summary":"stuck","openQuestions":["which db?"]}');

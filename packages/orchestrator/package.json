@@ -2,6 +2,7 @@
   "name": "@openproject-agent/orchestrator",
   "version": "0.1.0",
   "description": "CLI that runs headless Claude Code against OpenProject work packages.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -8,13 +8,14 @@ import type { AppConfig } from './config.js';
 import type { Logger } from './logger.js';
 import type { AgentReport } from './report.js';
 
-const AI_NOTE = '_Bu değişiklik bir yapay zekâ ajanı tarafından üretildi ve bir insan tarafından incelenmelidir._';
+/** Default for config.commentFooter. */
+const AI_NOTE = '_This change was produced by an AI agent and must be reviewed by a human._';
 
 export function isProtected(config: AppConfig, statusName: string): boolean {
   return config.protectedTransitions.some((p) => p.toLowerCase() === statusName.toLowerCase());
 }
 
-export function buildResultComment(report: AgentReport): string {
+export function buildResultComment(report: AgentReport, footer: string = AI_NOTE): string {
   const lines: string[] = [];
   lines.push(`## AI Agent Result: ${report.result}`);
   lines.push('');
@@ -29,9 +30,11 @@ export function buildResultComment(report: AgentReport): string {
   }
   lines.push('');
   lines.push(`**Tests:** ${report.testsRun.trim() || '_not reported_'}`);
-  lines.push('');
-  lines.push('---');
-  lines.push(AI_NOTE);
+  if (footer.trim()) {
+    lines.push('');
+    lines.push('---');
+    lines.push(footer.trim());
+  }
   return lines.join('\n');
 }
 
@@ -92,7 +95,7 @@ export async function finalize(
 ): Promise<FinalizeResult> {
   const result: FinalizeResult = { commented: false, statusChanged: null };
 
-  const comment = buildResultComment(report);
+  const comment = buildResultComment(report, config.commentFooter);
   if (ctx.dryRun) {
     ctx.logger.info(`[dry-run] would comment on WP ${wp.id} (${comment.length} chars)`);
   } else {

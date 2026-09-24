@@ -3,6 +3,7 @@
  * and resolves link titles / hrefs into flat fields.
  */
 import type {
+  ActivityDTO,
   AttachmentDTO,
   CommentDTO,
   Formattable,
@@ -11,10 +12,12 @@ import type {
   PriorityDTO,
   ProjectDTO,
   RelationDTO,
+  SchemaFieldDTO,
   StatusDTO,
   TypeDTO,
   UserDTO,
   WorkPackageDetailDTO,
+  WorkPackageSchemaDTO,
   WorkPackageSummaryDTO,
 } from './types.js';
 
@@ -101,6 +104,54 @@ export function mapComment(hal: HalResource): CommentDTO {
     comment: raw(hal['comment']) ?? '',
     createdAt: str(hal['createdAt']),
   };
+}
+
+export function mapActivity(hal: HalResource): ActivityDTO {
+  const comment = raw(hal['comment']) ?? '';
+  const details = Array.isArray(hal['details'])
+    ? (hal['details'] as unknown[]).map((d) => raw(d) ?? '').filter(Boolean)
+    : [];
+  return {
+    id: hal.id ?? 0,
+    kind: comment.trim() ? 'comment' : 'change',
+    author: linkTitle(hal, 'user'),
+    authorId: idFromHref(linkHref(hal, 'user')),
+    comment,
+    details,
+    version: num(hal['version']),
+    internal: typeof hal['internal'] === 'boolean' ? (hal['internal'] as boolean) : null,
+    createdAt: str(hal['createdAt']),
+  };
+}
+
+/** Map a raw schema resource into a compact field list (skips meta keys). */
+export function mapWorkPackageSchema(hal: HalResource): WorkPackageSchemaDTO {
+  const id = schemaIdFromHref(linkHref(hal, 'self'));
+  const fields: SchemaFieldDTO[] = [];
+  for (const [key, value] of Object.entries(hal)) {
+    if (key.startsWith('_') || !value || typeof value !== 'object') continue;
+    const v = value as Record<string, unknown>;
+    if (typeof v['type'] !== 'string') continue;
+    fields.push({
+      key,
+      name: str(v['name']) ?? key,
+      type: v['type'] as string,
+      required: v['required'] === true,
+      writable: v['writable'] === true,
+    });
+  }
+  return {
+    id,
+    fields,
+    customFields: fields.filter((f) => /^customField\d+$/.test(f.key)),
+  };
+}
+
+/** Extract "6-7" from /api/v3/work_packages/schemas/6-7 (ids there are not purely numeric). */
+function schemaIdFromHref(href: string | null): string {
+  if (!href) return '';
+  const match = /\/schemas\/([^/]+)\/?$/.exec(href);
+  return match?.[1] ?? '';
 }
 
 export function mapRelation(hal: HalResource, currentWorkPackageId: number): RelationDTO {

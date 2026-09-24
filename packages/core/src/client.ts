@@ -22,10 +22,12 @@ import {
 } from './filters.js';
 import * as map from './map.js';
 import type {
+  ActivityDTO,
   AttachmentDTO,
   BoardColumnDTO,
   BoardDTO,
   CommentDTO,
+  CreateWorkPackageParams,
   HalCollection,
   HalResource,
   PriorityDTO,
@@ -37,6 +39,7 @@ import type {
   UserDTO,
   WorkPackageCollectionResult,
   WorkPackageDetailDTO,
+  WorkPackageSchemaDTO,
   WorkPackageSummaryDTO,
 } from './types.js';
 
@@ -366,6 +369,22 @@ export class OpenProjectClient {
       .filter((c) => c.comment.trim().length > 0);
   }
 
+  /** Full journal: every activity including pure change entries (status changes etc.). */
+  async getJournal(id: number | string): Promise<ActivityDTO[]> {
+    const col = await this.http.get<HalCollection>(`/work_packages/${id}/activities`);
+    return (col._embedded?.elements ?? []).map(map.mapActivity);
+  }
+
+  /** Field schema for a work package (types, required/writable flags, custom fields). */
+  async getWorkPackageSchema(id: number | string): Promise<WorkPackageSchemaDTO> {
+    const wp = await this.http.get<HalResource>(`/work_packages/${id}`);
+    const schemaLink = wp._links?.['schema'];
+    const href = (Array.isArray(schemaLink) ? schemaLink[0] : schemaLink)?.href;
+    if (!href) throw new NotFoundError(`Work package ${id} exposes no schema link`, 404);
+    const schema = await this.http.get<HalResource>(href.replace(/^\/api\/v3/, ''));
+    return map.mapWorkPackageSchema(schema);
+  }
+
   async getRelations(id: number | string): Promise<RelationDTO[]> {
     const col = await this.http.get<HalCollection>(`/work_packages/${id}/relations`);
     return (col._embedded?.elements ?? []).map((e) => map.mapRelation(e, Number(id)));
@@ -481,6 +500,33 @@ export class OpenProjectClient {
   async assign(id: number | string, userIdOrMe: string): Promise<WorkPackageSummaryDTO> {
     const userId = await this.resolveAssigneeId(userIdOrMe);
     return this.updateWorkPackage(id, { _links: { assignee: { href: `/api/v3/users/${userId}` } } });
+  }
+
+  /** Create a work package in a project. Resolves type/priority names and "me". */
+  async createWorkPackage(
+    projectId: string | number,
+    params: CreateWorkPackageParams,
+  ): Promise<WorkPackageSummaryDTO> {
+    const typeId = (await this.resolveTypeIds([params.type]))[0];
+    const links: Record<string, { href: string }> = {
+      type: { href: `/api/v3/types/${typeId}` },
+    };
+    if (params.assignee) {
+      links['assignee'] = { href: `/api/v3/users/${await this.resolveAssigneeId(params.assignee)}` };
+    }
+    if (params.priority) {
+      links['priority'] = { href: `/api/v3/priorities/${(await this.resolvePriorityIds([params.priority]))[0]}` };
+    }
+    if (params.parentId != null) {
+      links['parent'] = { href: `/api/v3/work_packages/${params.parentId}` };
+    }
+    const body: Record<string, unknown> = { subject: params.subject, _links: links };
+    if (params.description) body['description'] = { format: 'markdown', raw: params.description };
+    const created = await this.http.post<HalResource>(
+      `/projects/${encodeURIComponent(String(projectId))}/work_packages`,
+      body,
+    );
+    return map.mapWorkPackageSummary(created, this.baseUrl);
   }
 
   /** Log time against a work package (optional feature; /time_entries). */

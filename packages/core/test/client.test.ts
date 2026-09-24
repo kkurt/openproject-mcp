@@ -194,12 +194,107 @@ describe('downloadAttachment', () => {
   });
 });
 
+describe('journal / schema / create', () => {
+  it('getJournal maps change entries with detail lines and internal flag', async () => {
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/287/activities`, () =>
+        HttpResponse.json(
+          halCollection([
+            {
+              _type: 'Activity',
+              id: 629,
+              version: 1,
+              internal: false,
+              createdAt: '2026-07-01T00:00:00Z',
+              comment: { format: 'markdown', raw: '', html: '' },
+              details: [
+                { format: 'markdown', raw: 'Type set to Bug', html: '' },
+                { format: 'markdown', raw: 'Status changed from New to Developed', html: '' },
+              ],
+              _links: { user: { href: '/api/v3/users/9', title: 'Kürşat' } },
+            },
+            {
+              _type: 'Activity::Comment',
+              id: 655,
+              version: 2,
+              internal: false,
+              createdAt: '2026-07-13T21:30:00Z',
+              comment: { format: 'markdown', raw: 'Kök neden analizi', html: '' },
+              details: [],
+              _links: { user: { href: '/api/v3/users/9' } },
+            },
+          ]),
+        ),
+      ),
+    );
+    const journal = await makeClient().getJournal(287);
+    expect(journal).toHaveLength(2);
+    expect(journal[0]).toMatchObject({
+      id: 629,
+      kind: 'change',
+      author: 'Kürşat',
+      authorId: 9,
+      details: ['Type set to Bug', 'Status changed from New to Developed'],
+      version: 1,
+      internal: false,
+    });
+    expect(journal[1]).toMatchObject({ id: 655, kind: 'comment', comment: 'Kök neden analizi', authorId: 9 });
+  });
+
+  it('getWorkPackageSchema follows the schema link and maps fields + custom fields', async () => {
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/42`, () =>
+        HttpResponse.json(workPackageHal({ _links: { schema: { href: '/api/v3/work_packages/schemas/6-7' } } })),
+      ),
+      http.get(`${BASE}/api/v3/work_packages/schemas/6-7`, () =>
+        HttpResponse.json({
+          _type: 'Schema',
+          _links: { self: { href: '/api/v3/work_packages/schemas/6-7' } },
+          subject: { type: 'String', name: 'Subject', required: true, writable: true },
+          status: { type: 'Status', name: 'Status', required: true, writable: true },
+          customField1: { type: 'String', name: 'Müşteri Kodu', required: false, writable: true },
+        }),
+      ),
+    );
+    const schema = await makeClient().getWorkPackageSchema(42);
+    expect(schema.id).toBe('6-7');
+    expect(schema.fields).toContainEqual({ key: 'subject', name: 'Subject', type: 'String', required: true, writable: true });
+    expect(schema.customFields).toEqual([
+      { key: 'customField1', name: 'Müşteri Kodu', type: 'String', required: false, writable: true },
+    ]);
+  });
+
+  it('createWorkPackage resolves names and POSTs the right body', async () => {
+    let posted: Record<string, unknown> = {};
+    server.use(
+      http.get(`${BASE}/api/v3/types`, () => HttpResponse.json(halCollection([typeHal(1, 'Bug'), typeHal(7, 'Feature')]))),
+      http.get(`${BASE}/api/v3/users/me`, () => HttpResponse.json({ _type: 'User', id: 9, name: 'Me', login: 'me' })),
+      http.post(`${BASE}/api/v3/projects/demo/work_packages`, async ({ request }) => {
+        posted = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(workPackageHal({ id: 301, subject: 'Yeni istek' }));
+      }),
+    );
+    const created = await makeClient().createWorkPackage('demo', {
+      type: 'Feature',
+      subject: 'Yeni istek',
+      description: 'Detaylar...',
+      assignee: 'me',
+    });
+    expect(created.id).toBe(301);
+    expect(posted).toMatchObject({
+      subject: 'Yeni istek',
+      description: { format: 'markdown', raw: 'Detaylar...' },
+      _links: { type: { href: '/api/v3/types/7' }, assignee: { href: '/api/v3/users/9' } },
+    });
+  });
+});
+
 describe('boards', () => {
   const gridsResponse = halCollection([
     {
       _type: 'Grid',
       id: 18,
-      name: 'MetaAdmin',
+      name: 'Kanban',
       _links: { scope: { href: '/projects/demo/boards' } },
       widgets: [
         { identifier: 'work_package_query', startColumn: 1, options: { queryId: 55, filters: [{ status_id: { operator: '=', values: ['1'] } }] } },
@@ -217,7 +312,7 @@ describe('boards', () => {
     );
     const boards = await makeClient().listBoards('demo');
     expect(boards).toHaveLength(1);
-    expect(boards[0]).toMatchObject({ id: 18, name: 'MetaAdmin', projectIdentifier: 'demo' });
+    expect(boards[0]).toMatchObject({ id: 18, name: 'Kanban', projectIdentifier: 'demo' });
     expect(boards[0]?.columns).toEqual([
       { name: 'New', queryId: 55, statusId: 1, position: 1 },
       { name: 'In progress', queryId: 56, statusId: 7, position: 2 },

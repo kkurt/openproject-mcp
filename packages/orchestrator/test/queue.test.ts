@@ -26,7 +26,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 
 const board = {
   id: 18,
-  name: 'MetaAdmin',
+  name: 'Kanban',
   projectIdentifier: 'demo',
   columns: [
     { name: 'New', queryId: 55, statusId: 1, position: 1 },
@@ -56,15 +56,15 @@ afterEach(async () => {
 describe('buildQueue board mode', () => {
   it('pulls the leftmost column, preserving board order', async () => {
     const client = boardClient([summary(287), summary(288)]);
-    const queue = await buildQueue(client, makeConfig({ board: { name: 'MetaAdmin' } }), state, {});
+    const queue = await buildQueue(client, makeConfig({ board: { name: 'Kanban' } }), state, {});
     expect(queue.map((w) => w.id)).toEqual([287, 288]);
-    expect(client.getBoard).toHaveBeenCalledWith('MetaAdmin', 'demo');
+    expect(client.getBoard).toHaveBeenCalledWith('Kanban', 'demo');
     expect(client.listAllBoardColumnWorkPackages).toHaveBeenCalledWith('demo', 55);
   });
 
   it('honors --board / --column overrides', async () => {
     const client = boardClient([summary(1)]);
-    await buildQueue(client, makeConfig(), state, { board: 'MetaAdmin', column: 'In progress' });
+    await buildQueue(client, makeConfig(), state, { board: 'Kanban', column: 'In progress' });
     expect(client.listAllBoardColumnWorkPackages).toHaveBeenCalledWith('demo', 56);
   });
 
@@ -76,7 +76,7 @@ describe('buildQueue board mode', () => {
       summary(289, 'Bug', 'Someone Else'),
       summary(290, 'Bug', 'Me'),
     ]);
-    const config = makeConfig({ board: { name: 'MetaAdmin' }, filters: { types: ['Bug'], assignee: 'me' } });
+    const config = makeConfig({ board: { name: 'Kanban' }, filters: { types: ['Bug'], assignee: 'me' } });
     const queue = await buildQueue(client, config, state, {});
     // 287 processed, 288 not a Bug, 289 not me -> only 290 remains
     expect(queue.map((w) => w.id)).toEqual([290]);

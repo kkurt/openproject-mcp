@@ -57,15 +57,24 @@ function makeMockClient(overrides: Record<string, unknown> = {}) {
       data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]),
     })),
     listBoards: vi.fn(async () => [
-      { id: 18, name: 'MetaAdmin', projectIdentifier: 'demo', columns: [{ name: 'New', queryId: 55, statusId: 1, position: 1 }] },
+      { id: 18, name: 'Kanban', projectIdentifier: 'demo', columns: [{ name: 'New', queryId: 55, statusId: 1, position: 1 }] },
     ]),
     getBoard: vi.fn(async () => ({
       id: 18,
-      name: 'MetaAdmin',
+      name: 'Kanban',
       projectIdentifier: 'demo',
       columns: [{ name: 'New', queryId: 55, statusId: 1, position: 1 }],
     })),
     listBoardColumnWorkPackages: vi.fn(async () => ({ total: 1, count: 1, pageSize: 50, offset: 1, elements: [summary] })),
+    getJournal: vi.fn(async () => [
+      { id: 629, kind: 'change', author: 'K', authorId: 9, comment: '', details: ['Status changed from New to Developed'], version: 1, internal: false, createdAt: null },
+    ]),
+    getWorkPackageSchema: vi.fn(async () => ({
+      id: '6-7',
+      fields: [{ key: 'subject', name: 'Subject', type: 'String', required: true, writable: true }],
+      customFields: [],
+    })),
+    createWorkPackage: vi.fn(async () => summary),
     ...overrides,
   };
 }
@@ -113,12 +122,15 @@ describe('tool registration', () => {
       [
         'add_comment',
         'assign_work_package',
+        'create_work_package',
         'get_allowed_status_transitions',
         'get_attachment',
         'get_board',
+        'get_journal',
         'get_next_board_card',
         'get_next_work_package',
         'get_work_package',
+        'get_work_package_schema',
         'list_board_column',
         'list_boards',
         'list_priorities',
@@ -275,21 +287,59 @@ describe('get_attachment', () => {
   });
 });
 
+describe('journal / schema / create tools', () => {
+  it('get_journal returns change entries with detail lines', async () => {
+    const { mcpClient } = await harness();
+    const { json } = await call(mcpClient, 'get_journal', { workPackageId: 287 });
+    expect(json()).toMatchObject([{ id: 629, kind: 'change', details: ['Status changed from New to Developed'] }]);
+  });
+
+  it('get_work_package_schema returns the compact schema', async () => {
+    const { mcpClient } = await harness();
+    const { json } = await call(mcpClient, 'get_work_package_schema', { workPackageId: 42 });
+    expect(json()).toMatchObject({ id: '6-7', fields: [{ key: 'subject' }] });
+  });
+
+  it('create_work_package dryRun previews without writing', async () => {
+    const { mcpClient, mock } = await harness();
+    const { json } = await call(mcpClient, 'create_work_package', {
+      projectId: 'demo',
+      type: 'Feature',
+      subject: 'Yeni istek',
+      dryRun: true,
+    });
+    expect(json()).toMatchObject({ dryRun: true, action: 'create_work_package', subject: 'Yeni istek' });
+    expect(mock.createWorkPackage).not.toHaveBeenCalled();
+  });
+
+  it('create_work_package writes when allowed and refuses in read-only', async () => {
+    const { mcpClient, mock } = await harness();
+    const { json } = await call(mcpClient, 'create_work_package', { projectId: 'demo', type: 'Bug', subject: 'X' });
+    expect(json()).toMatchObject({ ok: true });
+    expect(mock.createWorkPackage).toHaveBeenCalledWith('demo', expect.objectContaining({ type: 'Bug', subject: 'X' }));
+
+    const ro = await harness({ readOnly: true });
+    const res = await call(ro.mcpClient, 'create_work_package', { projectId: 'demo', type: 'Bug', subject: 'X' });
+    expect(res.isError).toBe(true);
+    expect(ro.mock.createWorkPackage).not.toHaveBeenCalled();
+  });
+});
+
 describe('board tools', () => {
   it('list_boards returns boards with columns', async () => {
     const { mcpClient } = await harness();
     const { json } = await call(mcpClient, 'list_boards', {});
-    expect(json()).toMatchObject([{ name: 'MetaAdmin', columns: [{ name: 'New', queryId: 55 }] }]);
+    expect(json()).toMatchObject([{ name: 'Kanban', columns: [{ name: 'New', queryId: 55 }] }]);
   });
 
   it('list_board_column returns the column cards via its queryId', async () => {
     const { mcpClient, mock } = await harness();
     const { json } = await call(mcpClient, 'list_board_column', {
       projectId: 'demo',
-      boardName: 'MetaAdmin',
+      boardName: 'Kanban',
       columnName: 'New',
     });
-    expect(json()).toMatchObject({ board: 'MetaAdmin', column: 'New', workPackages: [summary] });
+    expect(json()).toMatchObject({ board: 'Kanban', column: 'New', workPackages: [summary] });
     expect(mock.listBoardColumnWorkPackages).toHaveBeenCalledWith('demo', 55, expect.anything());
   });
 
@@ -297,7 +347,7 @@ describe('board tools', () => {
     const { mcpClient } = await harness();
     const { isError, text } = await call(mcpClient, 'list_board_column', {
       projectId: 'demo',
-      boardName: 'MetaAdmin',
+      boardName: 'Kanban',
       columnName: 'Nope',
     });
     expect(isError).toBe(true);

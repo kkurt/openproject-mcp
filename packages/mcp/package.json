@@ -2,6 +2,7 @@
   "name": "@openproject-agent/mcp",
   "version": "0.1.0",
   "description": "MCP (stdio) server exposing OpenProject API v3 to Claude Code.",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

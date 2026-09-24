@@ -113,6 +113,41 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
   );
 
   server.registerTool(
+    'create_work_package',
+    {
+      title: 'Create work package',
+      description:
+        'Create a new work package (e.g. capture a requirement or bug from a conversation). ' +
+        'Resolves type/priority names and "me" as assignee. Honors dryRun and global read-only mode.',
+      inputSchema: {
+        projectId: z.string().describe('Project id or identifier.'),
+        type: z.string().describe('Type name or id, e.g. "Bug", "Feature", "Task".'),
+        subject: z.string().min(1),
+        description: z.string().optional().describe('Markdown description.'),
+        assignee: z.string().optional().describe('"me" or a numeric user id.'),
+        priority: z.string().optional().describe('Priority name or id.'),
+        parentId: z.number().int().positive().optional().describe('Parent work package id.'),
+        dryRun: z.boolean().optional(),
+      },
+    },
+    async ({ projectId, type, subject, description, assignee, priority, parentId, dryRun }) => {
+      if (dryRun) {
+        return jsonResult({ dryRun: true, action: 'create_work_package', projectId, type, subject, description, assignee, priority, parentId });
+      }
+      if (ctx.readOnly) return errorResult(READ_ONLY_MSG);
+      const created = await ctx.client.createWorkPackage(projectId, {
+        type,
+        subject,
+        ...(description ? { description } : {}),
+        ...(assignee ? { assignee } : {}),
+        ...(priority ? { priority } : {}),
+        ...(parentId != null ? { parentId } : {}),
+      });
+      return jsonResult({ ok: true, workPackage: created });
+    },
+  );
+
+  server.registerTool(
     'log_time',
     {
       title: 'Log time',

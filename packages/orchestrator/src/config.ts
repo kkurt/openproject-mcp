@@ -42,6 +42,8 @@ export const ConfigSchema = z.object({
   }),
   protectedTransitions: z.array(z.string()).default(['Closed', 'Rejected']),
   write: z.boolean().default(false),
+  /** Markdown appended to every result comment below a `---` rule; "" omits it. */
+  commentFooter: z.string().optional(),
   claude: z
     .object({
       binPath: z.string().default('claude'),

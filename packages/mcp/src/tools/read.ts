@@ -152,6 +152,30 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
   );
 
   server.registerTool(
+    'get_journal',
+    {
+      title: 'Get work package journal',
+      description:
+        'Full change history (journal) of a work package: comments AND change entries with human-readable ' +
+        'detail lines like "Status changed from New to In progress". Use get_work_package for current state.',
+      inputSchema: { workPackageId: z.number().int().positive().describe('Work package id.') },
+    },
+    async ({ workPackageId }) => jsonResult(await ctx.client.getJournal(workPackageId)),
+  );
+
+  server.registerTool(
+    'get_work_package_schema',
+    {
+      title: 'Get work package schema',
+      description:
+        'Field schema for a work package: every field with type, required/writable flags, plus the list of ' +
+        'custom fields (customField<N> keys with display names). Use before setting unusual fields.',
+      inputSchema: { workPackageId: z.number().int().positive().describe('Work package id.') },
+    },
+    async ({ workPackageId }) => jsonResult(await ctx.client.getWorkPackageSchema(workPackageId)),
+  );
+
+  server.registerTool(
     'get_attachment',
     {
       title: 'Get attachment content',

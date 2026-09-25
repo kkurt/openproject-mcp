@@ -31,6 +31,12 @@ export interface RunnerOptions {
   mcpConfigPath: string;
   allowedTools: string[];
   disallowedTools: string[];
+  /**
+   * Claude Code setting sources to load (user, project, local). Omit to keep the
+   * CLI default (all); [] isolates the run from every settings file, so hooks,
+   * plugins and permission allow-rules there cannot widen the agent's rights.
+   */
+  settingSources?: string[];
   addDirs?: string[];
   model?: string;
   maxTurns: number;
@@ -52,6 +58,32 @@ export interface RunnerResult {
   lineCount: number;
 }
 
+/**
+ * Built-in tools to make available: the names in allowedTools, minus MCP tools
+ * and permission patterns (`Bash(npm test:*)` -> `Bash`). Anything not allowed is
+ * then absent from the session rather than merely unapproved.
+ */
+export function builtInTools(allowedTools: string[]): string[] {
+  const names = allowedTools
+    .filter((t) => !t.startsWith('mcp__'))
+    .map((t) => t.trim().replace(/\(.*\)$/s, '').trim())
+    .filter(Boolean);
+  return [...new Set(names)];
+}
+
+/**
+ * Copy of `env` without OPENPROJECT_* variables and without any variable holding
+ * `secret` (the key may come from a differently named `env:VAR`). The agent
+ * reaches OpenProject only through its MCP server.
+ */
+export function agentEnv(env: NodeJS.ProcessEnv, secret?: string): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([key, value]) => !key.toUpperCase().startsWith('OPENPROJECT_') && !(secret && value === secret),
+    ),
+  );
+}
+
 export function buildClaudeArgs(options: RunnerOptions): string[] {
   const args = [
     '-p',
@@ -65,7 +97,10 @@ export function buildClaudeArgs(options: RunnerOptions): string[] {
     options.mcpConfigPath,
     '--allowedTools',
     options.allowedTools.join(','),
+    '--tools',
+    builtInTools(options.allowedTools).join(','),
   ];
+  if (options.settingSources) args.push('--setting-sources', options.settingSources.join(','));
   if (options.disallowedTools.length > 0) {
     args.push('--disallowedTools', options.disallowedTools.join(','));
   }

@@ -8,8 +8,10 @@ A pnpm monorepo that connects **OpenProject** to **Claude Code**:
 | [`@openproject-agent/mcp`](packages/mcp) | An MCP (stdio) server exposing OpenProject as tools Claude Code can call. |
 | [`@openproject-agent/orchestrator`](packages/orchestrator) | A CLI that pulls work packages, runs **headless Claude Code** (`claude -p`) against each, and writes the result back as a comment + status change. |
 
-The design goal is **safe, authorized automation**: dry-run by default, protected status
-transitions blocked, no git operations, secrets never logged.
+The design goal is **guarded automation**: dry-run by default, protected status transitions
+blocked, file access scoped to the target repo, and the API key kept out of logs and out of
+the agent's environment. These are guardrails, not a sandbox: read the
+[Security model](#security-model) before pointing the orchestrator at a real repository.
 
 > **Unofficial community project.** Not affiliated with, endorsed by, or sponsored by
 > OpenProject GmbH or Anthropic PBC. OpenProject, Claude and Claude Code are trademarks of
@@ -55,7 +57,12 @@ HTTP Basic **password** with the fixed username `apikey`
    - `filters` — which work packages to pull (`types`, `statuses`, `assignee: "me"`, ...).
    - `statusFlow` — `{ start, success, blocked }` status names the orchestrator advances to.
    - `protectedTransitions` — statuses that always require human approval (default `Closed`, `Rejected`).
-   - `claude.allowedTools` / `disallowedTools` — the tools spawned Claude Code may use.
+   - `claude.allowedTools` / `disallowedTools` — the tools spawned Claude Code may use;
+     built-in tools not listed in `allowedTools` are not available at all. The default scopes
+     file tools to the target repo (`Read(./**)`, `Edit(./**)`, ...); a bare `Read` or `Edit`
+     would allow every file your OS user can access. `claude.addDirs` widens the scope.
+   - `claude.settingSources` — which Claude Code settings files (`user`, `project`, `local`)
+     the agent loads; default `[]` (none). See [Security model](#security-model).
    - `claude.maxTurns` — turn cap (see note below).
    - `commentFooter` — Markdown appended to every result comment (defaults to an English
      "produced by an AI agent, must be reviewed by a human" note; `""` omits it).
@@ -214,15 +221,77 @@ progress in `.openproject-agent/state.json`. Runs are **sequential** (concurrenc
 
 ---
 
-## Safety notes
+## Security model
 
-- **Dry-run is the default.** Writing to OpenProject requires `--write` (or `write: true` in
-  config). In dry-run the MCP server is passed `OPENPROJECT_READONLY=true`.
-- **Protected transitions** (e.g. `Closed`, `Rejected`) are never performed automatically,
+**Read this before running the orchestrator.** It feeds OpenProject content (subject,
+description, assignee name, comments, relation titles, attachment names, and whatever the
+agent later reads through attachments or the `openproject` tools) into an autonomous Claude
+Code session that edits files in `targetRepo`. **Anyone who can write content the API key can
+read — work packages, comments or attachments, including related work packages in other
+projects — can try to steer that agent (prompt injection).** Assume they can run code on the
+orchestrator host:
+
+- The default `allowedTools` include `Edit`, `Write` and `Bash(npm test:*)`. `npm test` runs
+  whatever the repo's test script and test files say, and the agent can edit both, so an
+  allowed test command amounts to arbitrary code execution as your OS user.
+- **Dry-run does not prevent this.** It only stops writes to OpenProject; the agent still
+  edits files in `targetRepo` and runs its allowed commands.
+- In `--write` mode every field of the agent's result block (`summary`, `changedFiles`,
+  `openQuestions`, `testsRun`) — or up to 4000 characters of its final message when there is
+  no result block — is posted as a comment everyone in the project can read. That is a
+  possible channel for leaking file contents.
+- All work packages in one run share the same `targetRepo` working tree, so changes a
+  poisoned run leaves behind (e.g. to `CLAUDE.md` or tests) carry into the next run.
+
+Recommended setup:
+
+- Run the orchestrator in a disposable container, VM or devcontainer with no other
+  credentials and restricted network egress, against a throwaway clone or worktree. Keep
+  the API key out of files on that machine where you can (see below).
+- Use a dedicated low-privilege OpenProject account whose API key can only see the target
+  project.
+- Make sure only trusted people can write the content that gets queued: a project where only
+  trusted users may create, edit, comment on or attach to work packages, or a status/type in
+  the workflow that only trusted roles can set. `filters.assignee` and board columns choose
+  *which* work packages run, not *who* wrote their content.
+- Keep `allowedTools` minimal and path-scoped, stay in dry-run until you trust the setup, and
+  review the diff after each work package (e.g. `--limit 1` against a clean checkout) when
+  the queue is not fully trusted.
+
+What the orchestrator does to limit the blast radius:
+
+- **Fenced input.** Work-package text embedded in the prompt is wrapped in
+  `<untrusted-content>` tags, and the prompt tells the agent to treat those, attachments and
+  `openproject` tool results as data. This lowers the risk of prompt injection; it does not
+  remove it.
+- **Only allowed tools exist, scoped to the repo.** Built-in tools not listed in
+  `claude.allowedTools` are removed from the session (`--tools`), `disallowedTools` (default
+  `Bash(git:*)`) are denied, and the default file-tool rules (`Read(./**)` etc.) refuse paths
+  outside `targetRepo` and `claude.addDirs`. Commands run through an allowed `Bash` rule are
+  not confined this way.
+- **Isolated settings.** `claude.settingSources` defaults to `[]`, so nothing from your user,
+  project or local Claude Code settings files applies to unattended runs: no hooks, plugins
+  or allow-rules — but also no **deny rules**, sandbox or model settings, and the repo's
+  `CLAUDE.md` is not auto-loaded (the default template tells the agent to read it). Put
+  restrictions in `claude.disallowedTools`, which always applies. Adding a source (e.g.
+  `["user"]` when your Claude Code auth comes from `apiKeyHelper` or `env` in a settings file)
+  brings back that file's hooks, plugins and rules too. Never add `project` or `local` for an
+  untrusted queue: the agent can edit those files inside `targetRepo`.
+- **Read-only OpenProject access for the agent.** Its MCP server always runs with
+  `OPENPROJECT_READONLY=true`; every OpenProject write is made by the orchestrator itself, and
+  only in `--write` mode. `OPENPROJECT_*` variables (and any variable holding the key) are
+  removed from the agent's environment, so commands it runs do not inherit the API key. Code
+  running as your OS user can still read it from the files that hold it — the temporary MCP
+  config file and your `.env` — hence the recommendations above.
+- **Masking.** The API key is masked in the orchestrator's log output, in the
+  `.openproject-agent/logs/wp-<id>.jsonl` transcripts and in posted comments. Only the exact
+  key is caught: this stops accidental leaks, not a steered agent that encodes it.
+  Transcripts otherwise contain repository content verbatim; treat them as sensitive.
+- **Protected transitions** (default `Closed`, `Rejected`) are never performed automatically,
   by either the MCP server or the orchestrator.
-- **No git.** The prompt forbids git commands and the runner passes `--disallowedTools
-  "Bash(git:*)"`; only the working tree is modified.
-- **Secrets** are never written to the repo, logs, or state; the API key is masked in output.
+- **No git.** The prompt forbids git and the runner denies `Bash(git:*)`. This keeps a
+  well-behaved agent out of git; it is not a boundary against code run through another
+  allowed command.
 - **Unknown results** (no structured result block) are routed to human review, not
   auto-advanced.
 

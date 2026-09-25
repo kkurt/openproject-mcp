@@ -8,12 +8,12 @@ import path from 'node:path';
 import { Command } from 'commander';
 import dotenv from 'dotenv';
 import { OpenProjectClient } from '@openproject-agent/core';
-import { loadConfig, type AppConfig } from './config.js';
+import { loadConfig, maskSecret, type AppConfig } from './config.js';
 import { createLogger, type Logger } from './logger.js';
 import { buildMcpConfig, resolveMcpServerBin } from './mcp-config.js';
 import { runOrchestrator, type ConfirmDecision, type RunAgent, type RunSummary } from './orchestrator.js';
 import { buildQueue } from './queue.js';
-import { runClaude } from './runner.js';
+import { agentEnv, runClaude } from './runner.js';
 import { StateStore } from './state.js';
 
 const DEFAULT_CONFIG = 'openproject-agent.config.json';
@@ -103,18 +103,15 @@ function createClaudeRunner(
         mcpConfigPath,
         allowedTools: config.claude.allowedTools,
         disallowedTools: config.claude.disallowedTools,
+        settingSources: config.claude.settingSources,
         addDirs: config.claude.addDirs,
         ...(config.claude.model ? { model: config.claude.model } : {}),
         maxTurns: deps.maxTurns,
         timeoutMs: config.claude.timeoutMs,
-        env: {
-          ...process.env,
-          OPENPROJECT_URL: config.openproject.url,
-          OPENPROJECT_API_KEY: config.openproject.apiKey,
-          OPENPROJECT_READONLY: 'true',
-          OPENPROJECT_PROTECTED_TRANSITIONS: config.protectedTransitions.join(','),
-        },
-        onLine: (raw) => logStream.write(raw + '\n'),
+        // No OPENPROJECT_* vars: code the agent runs (e.g. `npm test`) must not see the
+        // API key; the MCP server gets its settings from the --mcp-config env block.
+        env: agentEnv(process.env, config.openproject.apiKey),
+        onLine: (raw) => logStream.write(maskSecret(raw, config.openproject.apiKey) + '\n'),
         onText: (t) => deps.logger.debug(t),
       });
     } finally {

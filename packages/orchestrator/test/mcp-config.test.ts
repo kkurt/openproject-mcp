@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildMcpConfig } from '@openproject-agent/orchestrator';
 
 describe('buildMcpConfig', () => {
-  it('wires the server command, args and env (readOnly mirrors dry-run)', () => {
+  it('wires the server command, args and env (read-only for sub-agents)', () => {
     const cfg = buildMcpConfig({
       serverPath: '/x/dist/bin.js',
       url: 'https://op.test',

@@ -28,7 +28,7 @@
     "binPath": "claude",
     "maxTurns": 40,
     "timeoutMs": 1800000,
-    "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(npm test:*)", "mcp__openproject"],
+    "allowedTools": ["Read(./**)", "Edit(./**)", "Write(./**)", "Grep(./**)", "Glob(./**)", "Bash(npm test:*)", "mcp__openproject"],
     "disallowedTools": ["Bash(git:*)"],
     "addDirs": []
   }

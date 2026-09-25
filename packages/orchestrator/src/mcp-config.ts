@@ -17,7 +17,7 @@ export interface BuildMcpConfigOptions {
   serverPath: string;
   url: string;
   apiKey: string;
-  /** Mirrors the orchestrator's dry-run: true blocks all writes from sub-agents. */
+  /** true blocks all writes from sub-agents; the orchestrator always passes true and does its own writes. */
   readOnly: boolean;
   protectedTransitions: string[];
   /** Node executable to launch the server with. Defaults to the current node. */

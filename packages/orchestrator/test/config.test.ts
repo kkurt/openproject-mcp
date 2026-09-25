@@ -49,8 +49,10 @@ describe('loadConfig', () => {
     expect(cfg.protectedTransitions).toEqual(['Closed', 'Rejected']);
     expect(cfg.write).toBe(false);
     expect(cfg.claude.maxTurns).toBe(40);
-    expect(cfg.claude.allowedTools).toContain('Read');
+    expect(cfg.claude.allowedTools).toContain('Read(./**)');
+    expect(cfg.claude.allowedTools).not.toContain('Read');
     expect(cfg.claude.disallowedTools).toContain('Bash(git:*)');
+    expect(cfg.claude.settingSources).toEqual([]);
   });
 
   it('throws when an env ref is missing', async () => {
@@ -81,7 +83,7 @@ describe('secret helpers', () => {
       statusFlow: { start: 'a', success: 'b', blocked: 'c' },
       protectedTransitions: [],
       write: false,
-      claude: { binPath: 'claude', maxTurns: 1, timeoutMs: 1, allowedTools: [], disallowedTools: [], addDirs: [] },
+      claude: { binPath: 'claude', maxTurns: 1, timeoutMs: 1, allowedTools: [], disallowedTools: [], settingSources: [], addDirs: [] },
     } as unknown as AppConfig;
     expect(redact(cfg).openproject.apiKey).toBe('***');
     // original is untouched

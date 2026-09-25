@@ -4,7 +4,7 @@
  * protected transitions. In dry-run mode NO OpenProject write call is made.
  */
 import type { OpenProjectClient, WorkPackageDetailDTO } from '@openproject-agent/core';
-import type { AppConfig } from './config.js';
+import { maskSecret, type AppConfig } from './config.js';
 import type { Logger } from './logger.js';
 import type { AgentReport } from './report.js';
 
@@ -95,7 +95,8 @@ export async function finalize(
 ): Promise<FinalizeResult> {
   const result: FinalizeResult = { commented: false, statusChanged: null };
 
-  const comment = buildResultComment(report, config.commentFooter);
+  // The report is agent-written text that becomes visible to everyone in the project.
+  const comment = maskSecret(buildResultComment(report, config.commentFooter), config.openproject.apiKey);
   if (ctx.dryRun) {
     ctx.logger.info(`[dry-run] would comment on WP ${wp.id} (${comment.length} chars)`);
   } else {

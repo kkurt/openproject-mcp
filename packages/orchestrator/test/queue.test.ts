@@ -19,7 +19,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     statusFlow: { start: 'In progress', success: 'Developed', blocked: 'On hold' },
     protectedTransitions: [],
     write: false,
-    claude: { binPath: 'claude', maxTurns: 40, timeoutMs: 1000, allowedTools: [], disallowedTools: [], addDirs: [] },
+    claude: { binPath: 'claude', maxTurns: 40, timeoutMs: 1000, allowedTools: [], disallowedTools: [], settingSources: [], addDirs: [] },
     ...overrides,
   };
 }

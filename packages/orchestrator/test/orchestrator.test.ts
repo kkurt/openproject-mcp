@@ -64,7 +64,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     statusFlow: { start: 'In progress', success: 'Developed', blocked: 'On hold' },
     protectedTransitions: ['Closed', 'Rejected'],
     write: false,
-    claude: { binPath: 'claude', maxTurns: 40, timeoutMs: 1000, allowedTools: [], disallowedTools: [], addDirs: [] },
+    claude: { binPath: 'claude', maxTurns: 40, timeoutMs: 1000, allowedTools: [], disallowedTools: [], settingSources: [], addDirs: [] },
     ...overrides,
   };
 }
@@ -142,6 +142,17 @@ describe('runOrchestrator', () => {
     const none = makeClient([summary(43)]);
     await runOrchestrator(deps(none, makeConfig({ commentFooter: '' }), runAgent), { dryRun: false, yes: true });
     expect(none.addComment.mock.calls[0]?.[1]).not.toContain('---');
+  });
+
+  it('masks the API key in the posted comment', async () => {
+    const client = makeClient([summary(42)]);
+    const config = makeConfig({ openproject: { url: 'https://op.test', apiKey: 'opk-SECRET-123' } });
+    const runAgent = agentReturning('{"result":"done","summary":"key is opk-SECRET-123","openQuestions":["opk-SECRET-123?"]}');
+    await runOrchestrator(deps(client, config, runAgent), { dryRun: false, yes: true });
+
+    const comment = client.addComment.mock.calls[0]?.[1] ?? '';
+    expect(comment).not.toContain('opk-SECRET-123');
+    expect(comment).toContain('key is ***');
   });
 
   it('blocked result advances to the blocked status', async () => {

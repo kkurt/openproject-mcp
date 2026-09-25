@@ -19,6 +19,19 @@ export function typeGuidance(type: string | null): string {
   return GENERIC_GUIDANCE;
 }
 
+/**
+ * Wrap text written by OpenProject users in <untrusted-content> tags so the
+ * template can tell the agent to treat it as data. Look-alike fence tags inside
+ * the text (spacing, case, separators) are escaped so they do not read as the
+ * real closing tag. This is a prompt-level mitigation, not a hard boundary.
+ */
+export function fenceUntrusted(text: string): string {
+  const neutralized = text.replace(/<(\s*\/?\s*untrusted[\W_]*content)/gi, '&lt;$1');
+  return neutralized.includes('\n')
+    ? `<untrusted-content>\n${neutralized}\n</untrusted-content>`
+    : `<untrusted-content>${neutralized}</untrusted-content>`;
+}
+
 /** Replace {{key}} placeholders. Unknown placeholders are left intact so typos are visible. */
 export function renderTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (match, key: string) =>
@@ -28,24 +41,26 @@ export function renderTemplate(template: string, vars: Record<string, string>): 
 
 function formatRelations(wp: WorkPackageDetailDTO): string {
   if (wp.relations.length === 0) return '(none)';
-  return wp.relations
-    .map((r) => `- ${r.type} #${r.targetId ?? '?'}${r.targetSubject ? `: ${r.targetSubject}` : ''}`)
-    .join('\n');
+  return fenceUntrusted(
+    wp.relations.map((r) => `- ${r.type} #${r.targetId ?? '?'}${r.targetSubject ? `: ${r.targetSubject}` : ''}`).join('\n'),
+  );
 }
 
 function formatComments(wp: WorkPackageDetailDTO): string {
   if (wp.comments.length === 0) return '(none)';
-  return wp.comments
-    .slice(-10)
-    .map((c) => `- ${c.author ?? 'unknown'}${c.createdAt ? ` (${c.createdAt})` : ''}: ${c.comment}`)
-    .join('\n');
+  return fenceUntrusted(
+    wp.comments
+      .slice(-10)
+      .map((c) => `- ${c.author ?? 'unknown'}${c.createdAt ? ` (${c.createdAt})` : ''}: ${c.comment}`)
+      .join('\n'),
+  );
 }
 
 function formatAttachments(wp: WorkPackageDetailDTO): string {
   if (wp.attachments.length === 0) return '(none)';
-  return wp.attachments
-    .map((a) => `- #${a.id} ${a.fileName}${a.contentType ? ` (${a.contentType})` : ''}`)
-    .join('\n');
+  return fenceUntrusted(
+    wp.attachments.map((a) => `- #${a.id} ${a.fileName}${a.contentType ? ` (${a.contentType})` : ''}`).join('\n'),
+  );
 }
 
 export function buildPromptVariables(
@@ -55,12 +70,12 @@ export function buildPromptVariables(
   return {
     id: String(wp.id),
     type: wp.type ?? 'Unknown',
-    subject: wp.subject,
+    subject: fenceUntrusted(wp.subject),
     status: wp.status ?? 'Unknown',
     priority: wp.priority ?? 'Unknown',
-    assignee: wp.assignee ?? 'Unassigned',
+    assignee: wp.assignee ? fenceUntrusted(wp.assignee) : 'Unassigned',
     url: wp.url,
-    description: wp.description?.trim() ? wp.description : '(no description provided)',
+    description: wp.description?.trim() ? fenceUntrusted(wp.description) : '(no description provided)',
     relations: formatRelations(wp),
     comments: formatComments(wp),
     attachments: formatAttachments(wp),

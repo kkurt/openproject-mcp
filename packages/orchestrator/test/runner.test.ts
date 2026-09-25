@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
-import { buildClaudeArgs, runClaude, type RunnerOptions } from '@openproject-agent/orchestrator';
+import { agentEnv, buildClaudeArgs, builtInTools, runClaude, type RunnerOptions } from '@openproject-agent/orchestrator';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyChild = any;
@@ -73,6 +73,47 @@ describe('buildClaudeArgs', () => {
     );
     // Verified: no --max-turns flag is emitted (it does not exist in the CLI).
     expect(args).not.toContain('--max-turns');
+  });
+
+  it('limits the available built-in tools to the allowed ones', () => {
+    const args = buildClaudeArgs({ ...baseOpts, allowedTools: ['Read', 'Bash(npm test:*)', 'mcp__openproject'] });
+    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Bash');
+  });
+
+  it('passes --setting-sources only when configured ([] -> "" loads no settings files)', () => {
+    expect(buildClaudeArgs(baseOpts)).not.toContain('--setting-sources');
+    const none = buildClaudeArgs({ ...baseOpts, settingSources: [] });
+    expect(none[none.indexOf('--setting-sources') + 1]).toBe('');
+    const some = buildClaudeArgs({ ...baseOpts, settingSources: ['user', 'project'] });
+    expect(some[some.indexOf('--setting-sources') + 1]).toBe('user,project');
+  });
+});
+
+describe('builtInTools', () => {
+  it('strips MCP tools and permission patterns, de-duplicating names', () => {
+    expect(builtInTools(['Read', 'Edit', 'Bash(npm test:*)', 'Bash(npm run lint)', 'mcp__openproject', 'WebFetch(domain:x.dev)'])).toEqual([
+      'Read',
+      'Edit',
+      'Bash',
+      'WebFetch',
+    ]);
+    expect(builtInTools(['mcp__openproject'])).toEqual([]);
+  });
+
+  it('handles path-scoped rules and surrounding whitespace', () => {
+    expect(builtInTools(['Read(./**)', ' Edit(./**) ', 'Bash(npm test:*) '])).toEqual(['Read', 'Edit', 'Bash']);
+  });
+});
+
+describe('agentEnv', () => {
+  it('removes OPENPROJECT_* variables (any case) and keeps the rest', () => {
+    const env = { PATH: '/bin', OPENPROJECT_API_KEY: 'secret', OPENPROJECT_URL: 'https://op.test', openproject_readonly: 'x', ANTHROPIC_API_KEY: 'a' };
+    expect(agentEnv(env)).toEqual({ PATH: '/bin', ANTHROPIC_API_KEY: 'a' });
+  });
+
+  it('also removes any variable whose value is the API key', () => {
+    expect(agentEnv({ PATH: '/bin', MY_OP_TOKEN: 'k123', OTHER: 'x' }, 'k123')).toEqual({ PATH: '/bin', OTHER: 'x' });
+    expect(agentEnv({ PATH: '/bin', EMPTY: '' }, '')).toEqual({ PATH: '/bin', EMPTY: '' });
   });
 });
 

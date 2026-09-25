@@ -50,10 +50,13 @@ export const ConfigSchema = z.object({
       maxTurns: z.number().int().positive().default(40),
       model: z.string().optional(),
       timeoutMs: z.number().int().positive().default(30 * 60 * 1000),
+      // File tools are scoped to targetRepo (the cwd) plus addDirs; a bare 'Read' would allow the whole disk.
       allowedTools: z
         .array(z.string())
-        .default(['Read', 'Edit', 'Write', 'Grep', 'Glob', 'Bash(npm test:*)', 'mcp__openproject']),
+        .default(['Read(./**)', 'Edit(./**)', 'Write(./**)', 'Grep(./**)', 'Glob(./**)', 'Bash(npm test:*)', 'mcp__openproject']),
       disallowedTools: z.array(z.string()).default(['Bash(git:*)']),
+      /** Claude Code settings files to load; [] = none, so no hooks/plugins/allow-rules leak into runs. */
+      settingSources: z.array(z.enum(['user', 'project', 'local'])).default([]),
       addDirs: z.array(z.string()).default([]),
     })
     .prefault({}),

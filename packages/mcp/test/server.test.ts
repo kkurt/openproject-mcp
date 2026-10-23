@@ -24,6 +24,7 @@ const detail = {
   startDate: null,
   dueDate: null,
   estimatedHours: null,
+  percentageDone: null,
   lockVersion: 3,
   customFields: {},
   comments: [],
@@ -75,6 +76,16 @@ function makeMockClient(overrides: Record<string, unknown> = {}) {
       customFields: [],
     })),
     createWorkPackage: vi.fn(async () => summary),
+    previewWorkPackageEdit: vi.fn(async () => ({
+      workPackageId: 42,
+      lockVersion: 3,
+      changes: { subject: { from: 'Fix the login crash', to: 'Renamed' } },
+    })),
+    editWorkPackage: vi.fn(async () => ({
+      workPackage: summary,
+      changes: { subject: { from: 'Fix the login crash', to: 'Renamed' } },
+      lockVersion: 4,
+    })),
     ...overrides,
   };
 }
@@ -140,6 +151,7 @@ describe('tool registration', () => {
         'list_work_packages',
         'log_time',
         'start_work_package',
+        'update_work_package',
         'update_work_package_status',
       ].sort(),
     );
@@ -322,6 +334,89 @@ describe('journal / schema / create tools', () => {
     const res = await call(ro.mcpClient, 'create_work_package', { projectId: 'demo', type: 'Bug', subject: 'X' });
     expect(res.isError).toBe(true);
     expect(ro.mock.createWorkPackage).not.toHaveBeenCalled();
+  });
+});
+
+describe('update_work_package', () => {
+  it('dryRun returns the before/after diff without writing', async () => {
+    const { mcpClient, mock } = await harness();
+    const { json } = await call(mcpClient, 'update_work_package', { workPackageId: 42, subject: 'Renamed', dryRun: true });
+    expect(json()).toMatchObject({
+      dryRun: true,
+      action: 'update_work_package',
+      lockVersion: 3,
+      changes: { subject: { from: 'Fix the login crash', to: 'Renamed' } },
+    });
+    expect(mock.previewWorkPackageEdit).toHaveBeenCalledWith(42, { subject: 'Renamed' });
+    expect(mock.editWorkPackage).not.toHaveBeenCalled();
+  });
+
+  it('writes the given fields, passing null clears and lockVersion through', async () => {
+    const { mcpClient, mock } = await harness();
+    const { json } = await call(mcpClient, 'update_work_package', {
+      workPackageId: 42,
+      description: '## Acceptance',
+      descriptionMode: 'append',
+      dueDate: null,
+      assignee: null,
+      lockVersion: 3,
+    });
+    expect(json()).toMatchObject({ ok: true, lockVersion: 4, workPackage: { id: 42 } });
+    expect(mock.editWorkPackage).toHaveBeenCalledWith(42, {
+      description: '## Acceptance',
+      descriptionMode: 'append',
+      dueDate: null,
+      assignee: null,
+      lockVersion: 3,
+    });
+  });
+
+  it('refuses an update with no fields', async () => {
+    const { mcpClient, mock } = await harness();
+    const { isError, text } = await call(mcpClient, 'update_work_package', { workPackageId: 42, lockVersion: 3 });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/nothing to update/i);
+    expect(mock.editWorkPackage).not.toHaveBeenCalled();
+  });
+
+  it('read-only mode refuses a real update but still previews', async () => {
+    const { mcpClient, mock } = await harness({ readOnly: true });
+    const res = await call(mcpClient, 'update_work_package', { workPackageId: 42, subject: 'Renamed' });
+    expect(res.isError).toBe(true);
+    expect(res.text).toMatch(/read-only/i);
+    expect(mock.editWorkPackage).not.toHaveBeenCalled();
+
+    const preview = await call(mcpClient, 'update_work_package', { workPackageId: 42, subject: 'Renamed', dryRun: true });
+    expect(preview.isError).toBe(false);
+  });
+
+  it('rejects malformed dates and out-of-range percentages', async () => {
+    const { mcpClient, mock } = await harness();
+    const badDate = await call(mcpClient, 'update_work_package', { workPackageId: 42, dueDate: '01.11.2026' });
+    expect(badDate.isError).toBe(true);
+    const badPct = await call(mcpClient, 'update_work_package', { workPackageId: 42, percentageDone: 120 });
+    expect(badPct.isError).toBe(true);
+    expect(mock.editWorkPackage).not.toHaveBeenCalled();
+  });
+
+  it('elides long description text in the reported changes', async () => {
+    const long = `${'a'.repeat(1000)}TAIL`;
+    const { mcpClient } = await harness({
+      client: {
+        editWorkPackage: vi.fn(async () => ({
+          workPackage: summary,
+          changes: { description: { from: 'short', to: long } },
+          lockVersion: 4,
+        })),
+      },
+    });
+    const { json } = await call(mcpClient, 'update_work_package', { workPackageId: 42, description: long });
+    const changes = json()['changes'] as { description: { from: string; to: string } };
+    expect(changes.description.from).toBe('short');
+    expect(changes.description.to.length).toBeLessThan(long.length);
+    expect(changes.description.to.startsWith('aaa')).toBe(true);
+    expect(changes.description.to.endsWith('TAIL')).toBe(true);
+    expect(changes.description.to).toMatch(/chars omitted/);
   });
 });
 

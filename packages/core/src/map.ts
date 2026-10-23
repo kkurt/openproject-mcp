@@ -6,6 +6,7 @@ import type {
   ActivityDTO,
   AttachmentDTO,
   CommentDTO,
+  EditableWorkPackageFields,
   Formattable,
   HalLink,
   HalResource,
@@ -65,6 +66,18 @@ function str(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+const ISO_DURATION =
+  /^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
+
+/** Convert an ISO-8601 duration (e.g. "PT1H30M", "P1DT2H") to decimal hours; a day counts as 24h. */
+export function iso8601ToHours(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const match = ISO_DURATION.exec(value);
+  if (!match || match.slice(1).every((part) => part === undefined)) return null;
+  const [days, hours, minutes, seconds] = match.slice(1).map((part) => Number(part ?? 0));
+  return Math.round((days * 24 + hours + minutes / 60 + seconds / 3600) * 10_000) / 10_000;
+}
+
 export function workPackageWebUrl(baseUrl: string, id: number): string {
   return `${baseUrl}/work_packages/${id}`;
 }
@@ -94,6 +107,21 @@ export function mapWorkPackageSummary(hal: HalResource, baseUrl: string): WorkPa
     assignee: linkTitle(hal, 'assignee'),
     updatedAt: str(hal['updatedAt']),
     url: workPackageWebUrl(baseUrl, id),
+  };
+}
+
+export function mapEditableFields(hal: HalResource): EditableWorkPackageFields {
+  return {
+    subject: str(hal['subject']) ?? '',
+    description: raw(hal['description']) ?? '',
+    startDate: str(hal['startDate']),
+    dueDate: str(hal['dueDate']),
+    estimatedHours: iso8601ToHours(hal['estimatedTime']),
+    percentageDone: num(hal['percentageDone']),
+    priority: linkTitle(hal, 'priority'),
+    assignee: linkTitle(hal, 'assignee'),
+    responsible: linkTitle(hal, 'responsible'),
+    parentId: idFromHref(linkHref(hal, 'parent')),
   };
 }
 
@@ -272,7 +300,8 @@ export function mapWorkPackageDetail(
     createdAt: str(hal['createdAt']),
     startDate: str(hal['startDate']),
     dueDate: str(hal['dueDate']),
-    estimatedHours: num(hal['estimatedHours']),
+    estimatedHours: iso8601ToHours(hal['estimatedTime']),
+    percentageDone: num(hal['percentageDone']),
     lockVersion: num(hal['lockVersion']) ?? 0,
     customFields: collectCustomFields(hal),
     comments: parts.comments,

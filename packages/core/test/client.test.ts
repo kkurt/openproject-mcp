@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
-import { NotFoundError, OpenProjectClient, UnprocessableError } from '@openproject-agent/core';
+import { ConflictError, NotFoundError, OpenProjectClient, UnprocessableError } from '@openproject-agent/core';
 import {
   activityHal,
   formHal,
   halCollection,
+  priorityHal,
   statusHal,
   typeHal,
   workPackageHal,
@@ -85,6 +86,155 @@ describe('updateWorkPackage lockVersion / 409', () => {
     expect(patchCount).toBe(2);
     expect(getCount).toBe(2);
     expect(res.subject).toBe('patched@4');
+  });
+});
+
+describe('editWorkPackage', () => {
+  it('builds the PATCH body from friendly params and reports before/after changes', async () => {
+    let patched: Record<string, unknown> = {};
+    server.use(
+      http.get(`${BASE}/api/v3/priorities`, () => HttpResponse.json(halCollection([priorityHal(8, 'High'), priorityHal(9, 'Immediate')]))),
+      http.get(`${BASE}/api/v3/users/me`, () => HttpResponse.json({ _type: 'User', id: 9, name: 'Me', login: 'me' })),
+      http.get(`${BASE}/api/v3/work_packages/42`, () =>
+        HttpResponse.json(
+          workPackageHal({
+            lockVersion: 5,
+            estimatedTime: 'PT2H',
+            _links: { responsible: { href: '/api/v3/users/1', title: 'Bob' } },
+          }),
+        ),
+      ),
+      http.patch(`${BASE}/api/v3/work_packages/42`, async ({ request }) => {
+        patched = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(workPackageHal({ subject: 'Login crash on Safari', lockVersion: 6 }));
+      }),
+    );
+    const res = await makeClient().editWorkPackage(42, {
+      subject: 'Login crash on Safari',
+      description: 'New body',
+      dueDate: '2026-11-01',
+      startDate: null,
+      estimatedHours: 1.5,
+      percentageDone: 40,
+      priority: 'Immediate',
+      assignee: 'me',
+      responsible: null,
+      parentId: null,
+    });
+    expect(patched).toEqual({
+      lockVersion: 5,
+      subject: 'Login crash on Safari',
+      description: { format: 'markdown', raw: 'New body' },
+      startDate: null,
+      dueDate: '2026-11-01',
+      estimatedTime: 'PT1H30M',
+      percentageDone: 40,
+      _links: {
+        priority: { href: '/api/v3/priorities/9' },
+        assignee: { href: '/api/v3/users/9' },
+        responsible: { href: null },
+        parent: { href: null },
+      },
+    });
+    expect(res.lockVersion).toBe(6);
+    expect(res.workPackage.subject).toBe('Login crash on Safari');
+    expect(res.changes).toEqual({
+      subject: { from: 'Fix the login crash', to: 'Login crash on Safari' },
+      description: { from: 'Steps to reproduce...', to: 'New body' },
+      startDate: { from: null, to: null },
+      dueDate: { from: null, to: '2026-11-01' },
+      estimatedHours: { from: 2, to: 1.5 },
+      percentageDone: { from: null, to: 40 },
+      priority: { from: 'High', to: 'Immediate' },
+      assignee: { from: 'Alice', to: 'me' },
+      responsible: { from: 'Bob', to: null },
+      parentId: { from: 40, to: null },
+    });
+  });
+
+  it('append mode re-merges against the fresh description when a 409 forces a retry', async () => {
+    let getCount = 0;
+    const patchedDescriptions: string[] = [];
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/42`, () => {
+        getCount += 1;
+        const raw = getCount === 1 ? 'Original' : 'Original\n\nHuman edit';
+        return HttpResponse.json(workPackageHal({ lockVersion: getCount, description: { format: 'markdown', raw } }));
+      }),
+      http.patch(`${BASE}/api/v3/work_packages/42`, async ({ request }) => {
+        const body = (await request.json()) as { description: { raw: string } };
+        patchedDescriptions.push(body.description.raw);
+        if (patchedDescriptions.length === 1) {
+          return HttpResponse.json({ _type: 'Error', message: 'lock outdated' }, { status: 409 });
+        }
+        return HttpResponse.json(workPackageHal({ lockVersion: 3 }));
+      }),
+    );
+    const res = await makeClient().editWorkPackage(42, { description: '## Acceptance', descriptionMode: 'append' });
+    expect(patchedDescriptions).toEqual(['Original\n\n## Acceptance', 'Original\n\nHuman edit\n\n## Acceptance']);
+    expect(res.changes.description).toEqual({
+      from: 'Original\n\nHuman edit',
+      to: 'Original\n\nHuman edit\n\n## Acceptance',
+    });
+  });
+
+  it('append to an empty description just sets the text', async () => {
+    let patched: { description?: { raw: string } } = {};
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/42`, () =>
+        HttpResponse.json(workPackageHal({ description: { format: 'markdown', raw: '' } })),
+      ),
+      http.patch(`${BASE}/api/v3/work_packages/42`, async ({ request }) => {
+        patched = (await request.json()) as typeof patched;
+        return HttpResponse.json(workPackageHal());
+      }),
+    );
+    await makeClient().editWorkPackage(42, { description: 'First text', descriptionMode: 'append' });
+    expect(patched.description?.raw).toBe('First text');
+  });
+
+  it('with a pinned lockVersion, refuses a stale edit without sending a PATCH', async () => {
+    let patchCount = 0;
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/42`, () => HttpResponse.json(workPackageHal({ lockVersion: 7 }))),
+      http.patch(`${BASE}/api/v3/work_packages/42`, () => {
+        patchCount += 1;
+        return HttpResponse.json(workPackageHal());
+      }),
+    );
+    const err = await makeClient()
+      .editWorkPackage(42, { description: 'Overwrite', lockVersion: 5 })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect((err as Error).message).toMatch(/lockVersion 5.*current: 7/);
+    expect(patchCount).toBe(0);
+  });
+
+  it('with a pinned lockVersion, surfaces a PATCH 409 instead of retrying', async () => {
+    let patchCount = 0;
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/42`, () => HttpResponse.json(workPackageHal({ lockVersion: 5 }))),
+      http.patch(`${BASE}/api/v3/work_packages/42`, () => {
+        patchCount += 1;
+        return HttpResponse.json({ _type: 'Error', message: 'lock outdated' }, { status: 409 });
+      }),
+    );
+    await expect(
+      makeClient().editWorkPackage(42, { subject: 'x', lockVersion: 5 }),
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(patchCount).toBe(1);
+  });
+
+  it('previewWorkPackageEdit computes the diff without writing', async () => {
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/42`, () => HttpResponse.json(workPackageHal({ lockVersion: 4 }))),
+    );
+    const preview = await makeClient().previewWorkPackageEdit(42, { subject: 'Renamed' });
+    expect(preview).toEqual({
+      workPackageId: 42,
+      lockVersion: 4,
+      changes: { subject: { from: 'Fix the login crash', to: 'Renamed' } },
+    });
   });
 });
 

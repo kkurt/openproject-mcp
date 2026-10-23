@@ -1,10 +1,29 @@
 /** Write MCP tools. Every tool honors `dryRun` and the global read-only mode. */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { WorkPackageChanges } from '@openproject-agent/core';
 import { z } from 'zod';
 import { errorResult, isProtectedTransition, jsonResult, type ToolContext } from './context.js';
 
 const READ_ONLY_MSG = 'Server is in read-only mode; this write was refused. Re-run with dryRun to preview instead.';
+
+/** update_work_package inputs that shape the edit rather than name a field to change. */
+const EDIT_OPTION_KEYS = new Set(['descriptionMode', 'lockVersion']);
+
+const CHANGE_TEXT_LIMIT = 600;
+
+/** Keep the head and tail of long text so a diff stays readable (an append lands at the end). */
+function elide(text: string): string {
+  if (text.length <= CHANGE_TEXT_LIMIT) return text;
+  const half = CHANGE_TEXT_LIMIT / 2;
+  return `${text.slice(0, half)}\n… [${text.length - CHANGE_TEXT_LIMIT} chars omitted] …\n${text.slice(-half)}`;
+}
+
+function compactChanges(changes: WorkPackageChanges): WorkPackageChanges {
+  const { description } = changes;
+  if (!description) return changes;
+  return { ...changes, description: { from: elide(description.from), to: elide(description.to) } };
+}
 
 /** Shared status-transition logic: resolve target, block protected/disallowed, honor dryRun/read-only. */
 async function transitionStatus(
@@ -144,6 +163,62 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
         ...(parentId != null ? { parentId } : {}),
       });
       return jsonResult({ ok: true, workPackage: created });
+    },
+  );
+
+  server.registerTool(
+    'update_work_package',
+    {
+      title: 'Update work package',
+      description:
+        'Edit fields of a work package: subject, description (replace or append), start/due date, estimate, ' +
+        '% done, priority, assignee, accountable, parent. Only the fields you pass change; null clears a field. ' +
+        'Status is NOT changed here (use update_work_package_status). When replacing the description, pass the ' +
+        'lockVersion from get_work_package so a concurrent human edit is reported instead of overwritten. ' +
+        'dryRun returns the before/after of each field without writing.',
+      inputSchema: {
+        workPackageId: z.number().int().positive(),
+        subject: z.string().min(1).optional(),
+        description: z.string().optional().describe('Markdown description. "" clears it.'),
+        descriptionMode: z
+          .enum(['replace', 'append'])
+          .optional()
+          .describe('replace (default) overwrites the description; append adds the text after it.'),
+        startDate: z.iso.date().nullable().optional().describe('YYYY-MM-DD, or null to clear.'),
+        dueDate: z.iso.date().nullable().optional().describe('YYYY-MM-DD, or null to clear.'),
+        estimatedHours: z.number().min(0).nullable().optional().describe('Estimated hours (decimal allowed).'),
+        percentageDone: z.number().int().min(0).max(100).nullable().optional(),
+        priority: z.string().optional().describe('Priority name or id.'),
+        assignee: z.string().nullable().optional().describe('"me", a numeric user id, or null to unassign.'),
+        responsible: z
+          .string()
+          .nullable()
+          .optional()
+          .describe('Accountable user: "me", a numeric user id, or null to clear.'),
+        parentId: z.number().int().positive().nullable().optional().describe('Parent work package id, or null to detach.'),
+        lockVersion: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('lockVersion from the get_work_package this edit is based on; refuses the edit if it changed since.'),
+        dryRun: z.boolean().optional(),
+      },
+    },
+    async ({ workPackageId, dryRun, ...params }) => {
+      if (!Object.entries(params).some(([key, value]) => value !== undefined && !EDIT_OPTION_KEYS.has(key))) {
+        return errorResult(
+          'Nothing to update: pass at least one field (subject, description, dates, ...). ' +
+            'Status changes go through update_work_package_status.',
+        );
+      }
+      if (dryRun) {
+        const preview = await ctx.client.previewWorkPackageEdit(workPackageId, params);
+        return jsonResult({ dryRun: true, action: 'update_work_package', ...preview, changes: compactChanges(preview.changes) });
+      }
+      if (ctx.readOnly) return errorResult(READ_ONLY_MSG);
+      const result = await ctx.client.editWorkPackage(workPackageId, params);
+      return jsonResult({ ok: true, ...result, changes: compactChanges(result.changes) });
     },
   );
 

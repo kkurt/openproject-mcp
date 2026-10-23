@@ -24,6 +24,7 @@ const wp: WorkPackageDetailDTO = {
   startDate: null,
   dueDate: null,
   estimatedHours: null,
+  percentageDone: null,
   lockVersion: 1,
   customFields: {},
   comments: [{ id: 1, author: 'Bob', comment: 'seen it too', createdAt: '2024-01-01' }],

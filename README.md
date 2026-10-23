@@ -168,7 +168,10 @@ performs a live auth + project-listing round-trip, and ends with a one-line fix 
 **Write** (each supports a `dryRun` flag and honors global read-only mode):
 `add_comment`, `update_work_package_status`, `start_work_package` (move a WP to the start
 status, default "In progress" — call when you begin work), `create_work_package`,
-`assign_work_package`, `log_time`.
+`update_work_package` (edit subject, description — replace or append — dates, estimate, % done,
+priority, assignee, accountable, parent; `null` clears a field; dryRun returns a before/after
+diff; pass `lockVersion` from `get_work_package` to have a concurrent edit reported instead of
+overwritten), `assign_work_package`, `log_time`.
 
 Critical transitions in `protectedTransitions` are refused with a "human approval required"
 error, and work-package deletion is never exposed.

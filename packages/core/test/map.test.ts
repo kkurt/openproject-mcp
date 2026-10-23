@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   idFromHref,
+  iso8601ToHours,
   mapAttachment,
   mapComment,
   mapRelation,
@@ -18,6 +19,25 @@ describe('idFromHref', () => {
     expect(idFromHref('/api/v3/attachments/5/content')).toBe(5);
     expect(idFromHref(null)).toBeNull();
     expect(idFromHref('/api/v3/statuses/none')).toBeNull();
+  });
+});
+
+describe('iso8601ToHours', () => {
+  it('converts ISO-8601 durations to decimal hours', () => {
+    expect(iso8601ToHours('PT8H')).toBe(8);
+    expect(iso8601ToHours('PT1H30M')).toBe(1.5);
+    expect(iso8601ToHours('PT45M')).toBe(0.75);
+    expect(iso8601ToHours('P1DT2H')).toBe(26);
+    expect(iso8601ToHours('PT0.5H')).toBe(0.5);
+  });
+
+  it('returns null for missing or unparseable values', () => {
+    expect(iso8601ToHours(null)).toBeNull();
+    expect(iso8601ToHours(undefined)).toBeNull();
+    expect(iso8601ToHours('')).toBeNull();
+    expect(iso8601ToHours('P')).toBeNull();
+    expect(iso8601ToHours('8 hours')).toBeNull();
+    expect(iso8601ToHours(8)).toBeNull();
   });
 });
 
@@ -54,6 +74,8 @@ describe('mapWorkPackageDetail', () => {
     expect(detail.lockVersion).toBe(3);
     expect(detail.project).toEqual({ id: 3, name: 'Demo Project' });
     expect(detail.customFields).toEqual({ customField1: 'CF value' });
+    expect(detail.estimatedHours).toBeNull();
+    expect(detail.percentageDone).toBeNull();
     expect(detail.comments).toHaveLength(1);
     // Parent from _links.parent becomes a synthetic relation.
     expect(detail.relations).toContainEqual({
@@ -63,6 +85,13 @@ describe('mapWorkPackageDetail', () => {
       targetSubject: 'Epic: Auth',
       description: null,
     });
+  });
+
+  it('reads the estimate from estimatedTime (ISO-8601) and percentageDone', () => {
+    const hal = workPackageHal({ estimatedTime: 'PT2H30M', percentageDone: 60 });
+    const detail = mapWorkPackageDetail(hal, { comments: [], relations: [], attachments: [] }, BASE);
+    expect(detail.estimatedHours).toBe(2.5);
+    expect(detail.percentageDone).toBe(60);
   });
 });
 

@@ -28,6 +28,7 @@ import type {
   BoardDTO,
   CommentDTO,
   CreateWorkPackageParams,
+  EditableWorkPackageFields,
   HalCollection,
   HalResource,
   PriorityDTO,
@@ -36,9 +37,13 @@ import type {
   StatusDTO,
   StatusTransitionDTO,
   TypeDTO,
+  UpdateWorkPackageParams,
   UserDTO,
+  WorkPackageChanges,
   WorkPackageCollectionResult,
   WorkPackageDetailDTO,
+  WorkPackageEditPreview,
+  WorkPackageEditResult,
   WorkPackageSchemaDTO,
   WorkPackageSummaryDTO,
 } from './types.js';
@@ -81,6 +86,21 @@ export function hoursToIso8601(hours: number): string {
   if (h) out += `${h}H`;
   if (m) out += `${m}M`;
   return out === 'PT' ? 'PT0H' : out;
+}
+
+function lockVersionOf(wp: HalResource): number {
+  return typeof wp['lockVersion'] === 'number' ? wp['lockVersion'] : 0;
+}
+
+/** Refuse an edit based on a read that someone else's change has since superseded. */
+function assertLockVersionFresh(id: number | string, expected: number, current: number): void {
+  if (expected !== current) {
+    throw new ConflictError(
+      `Work package ${id} was modified after lockVersion ${expected} was read (current: ${current}). ` +
+        'Re-read it and re-apply the change.',
+      409,
+    );
+  }
 }
 
 /** Pull the status id out of a board widget's query filters, if it is status-based. */
@@ -457,8 +477,34 @@ export class OpenProjectClient {
   }
 
   private async currentLockVersion(id: number | string): Promise<number> {
-    const wp = await this.http.get<HalResource>(`/work_packages/${id}`);
-    return typeof wp['lockVersion'] === 'number' ? (wp['lockVersion'] as number) : 0;
+    return lockVersionOf(await this.http.get<HalResource>(`/work_packages/${id}`));
+  }
+
+  /**
+   * Read the work package, build a PATCH body from that read, and send it with
+   * the read's lockVersion. On a 409 the read-build-write runs once more, so a
+   * body derived from current values (e.g. an appended description) is rebuilt
+   * from fresh data. With `expectedLockVersion` the caller's own read is the
+   * baseline: a newer version, or a 409, is surfaced as a ConflictError instead.
+   */
+  private async patchFromCurrent(
+    id: number | string,
+    build: (current: HalResource) => Promise<Record<string, unknown>>,
+    expectedLockVersion?: number,
+  ): Promise<HalResource> {
+    const attempt = async (): Promise<HalResource> => {
+      const current = await this.http.get<HalResource>(`/work_packages/${id}`);
+      const lockVersion = lockVersionOf(current);
+      if (expectedLockVersion !== undefined) assertLockVersionFresh(id, expectedLockVersion, lockVersion);
+      const body = await build(current);
+      return this.http.patch<HalResource>(`/work_packages/${id}`, { lockVersion, ...body });
+    };
+    try {
+      return await attempt();
+    } catch (err) {
+      if (err instanceof ConflictError && expectedLockVersion === undefined) return attempt();
+      throw err;
+    }
   }
 
   /**
@@ -469,18 +515,100 @@ export class OpenProjectClient {
     id: number | string,
     patch: Record<string, unknown>,
   ): Promise<WorkPackageSummaryDTO> {
-    const attempt = async (): Promise<HalResource> => {
-      const lockVersion = await this.currentLockVersion(id);
-      return this.http.patch<HalResource>(`/work_packages/${id}`, { lockVersion, ...patch });
+    return map.mapWorkPackageSummary(await this.patchFromCurrent(id, async () => patch), this.baseUrl);
+  }
+
+  /** Translate edit params into a PATCH body plus the before/after of every touched field. */
+  private async buildEdit(
+    current: HalResource,
+    params: UpdateWorkPackageParams,
+  ): Promise<{ body: Record<string, unknown>; changes: WorkPackageChanges }> {
+    const before = map.mapEditableFields(current);
+    const body: Record<string, unknown> = {};
+    const links: Record<string, { href: string | null }> = {};
+    const changes: WorkPackageChanges = {};
+    const change = <K extends keyof EditableWorkPackageFields>(key: K, to: EditableWorkPackageFields[K]): void => {
+      // TS cannot relate a write through a generic key of a mapped type; the cast is sound.
+      changes[key] = { from: before[key], to } as WorkPackageChanges[K];
     };
-    try {
-      return map.mapWorkPackageSummary(await attempt(), this.baseUrl);
-    } catch (err) {
-      if (err instanceof ConflictError) {
-        return map.mapWorkPackageSummary(await attempt(), this.baseUrl);
-      }
-      throw err;
+    const userHref = async (value: string | null): Promise<string | null> =>
+      value === null ? null : `/api/v3/users/${await this.resolveAssigneeId(value)}`;
+
+    if (params.subject !== undefined) {
+      body['subject'] = params.subject;
+      change('subject', params.subject);
     }
+    if (params.description !== undefined) {
+      const text =
+        params.descriptionMode === 'append' && before.description.trim()
+          ? `${before.description.trimEnd()}\n\n${params.description}`
+          : params.description;
+      body['description'] = { format: 'markdown', raw: text };
+      change('description', text);
+    }
+    if (params.startDate !== undefined) {
+      body['startDate'] = params.startDate;
+      change('startDate', params.startDate);
+    }
+    if (params.dueDate !== undefined) {
+      body['dueDate'] = params.dueDate;
+      change('dueDate', params.dueDate);
+    }
+    if (params.estimatedHours !== undefined) {
+      body['estimatedTime'] = params.estimatedHours === null ? null : hoursToIso8601(params.estimatedHours);
+      change('estimatedHours', params.estimatedHours);
+    }
+    if (params.percentageDone !== undefined) {
+      body['percentageDone'] = params.percentageDone;
+      change('percentageDone', params.percentageDone);
+    }
+    if (params.priority !== undefined) {
+      const priorities = await this.listPriorities();
+      const priorityId = this.resolve(priorities, params.priority, 'priority');
+      links['priority'] = { href: `/api/v3/priorities/${priorityId}` };
+      change('priority', priorities.find((p) => p.id === priorityId)?.name ?? params.priority);
+    }
+    if (params.assignee !== undefined) {
+      links['assignee'] = { href: await userHref(params.assignee) };
+      change('assignee', params.assignee);
+    }
+    if (params.responsible !== undefined) {
+      links['responsible'] = { href: await userHref(params.responsible) };
+      change('responsible', params.responsible);
+    }
+    if (params.parentId !== undefined) {
+      links['parent'] = { href: params.parentId === null ? null : `/api/v3/work_packages/${params.parentId}` };
+      change('parentId', params.parentId);
+    }
+    if (Object.keys(links).length > 0) body['_links'] = links;
+    return { body, changes };
+  }
+
+  /**
+   * Edit work-package fields; omitted fields are left as-is. Status is not
+   * editable here on purpose: updateStatus checks the allowed transitions.
+   */
+  async editWorkPackage(id: number | string, params: UpdateWorkPackageParams): Promise<WorkPackageEditResult> {
+    let changes: WorkPackageChanges = {};
+    const updated = await this.patchFromCurrent(
+      id,
+      async (current) => {
+        const edit = await this.buildEdit(current, params);
+        changes = edit.changes;
+        return edit.body;
+      },
+      params.lockVersion,
+    );
+    return { workPackage: map.mapWorkPackageSummary(updated, this.baseUrl), changes, lockVersion: lockVersionOf(updated) };
+  }
+
+  /** The before/after an edit would produce, without writing (for dryRun previews). */
+  async previewWorkPackageEdit(id: number | string, params: UpdateWorkPackageParams): Promise<WorkPackageEditPreview> {
+    const current = await this.http.get<HalResource>(`/work_packages/${id}`);
+    const lockVersion = lockVersionOf(current);
+    if (params.lockVersion !== undefined) assertLockVersionFresh(id, params.lockVersion, lockVersion);
+    const { changes } = await this.buildEdit(current, params);
+    return { workPackageId: Number(id), lockVersion, changes };
   }
 
   /** Change status by name or id; verifies the transition is permitted first. */

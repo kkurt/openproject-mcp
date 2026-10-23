@@ -26,7 +26,8 @@ export function workPackageHal(overrides: Record<string, unknown> = {}): Record<
     updatedAt: '2024-01-02T00:00:00Z',
     startDate: null,
     dueDate: null,
-    estimatedHours: null,
+    estimatedTime: null,
+    percentageDone: null,
     _links: {
       self: { href: '/api/v3/work_packages/42' },
       type: { href: '/api/v3/types/1', title: 'Bug' },

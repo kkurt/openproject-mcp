@@ -37,6 +37,7 @@ function detail(id: number): WorkPackageDetailDTO {
     startDate: null,
     dueDate: null,
     estimatedHours: null,
+    percentageDone: null,
     lockVersion: 1,
     customFields: {},
     comments: [],

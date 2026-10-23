@@ -116,6 +116,69 @@ export interface CreateWorkPackageParams {
   parentId?: number;
 }
 
+/** Fields an edit can change. Omitted fields are left as-is; null clears a field. */
+export interface UpdateWorkPackageParams {
+  subject?: string;
+  /** Markdown description; '' clears it. */
+  description?: string;
+  /** 'replace' (default) overwrites the description; 'append' adds after it, separated by a blank line. */
+  descriptionMode?: 'replace' | 'append';
+  /** YYYY-MM-DD. */
+  startDate?: string | null;
+  /** YYYY-MM-DD. */
+  dueDate?: string | null;
+  /** Decimal hours; sent as the ISO-8601 `estimatedTime`. */
+  estimatedHours?: number | null;
+  /** 0-100. */
+  percentageDone?: number | null;
+  /** Priority name or id. */
+  priority?: string;
+  /** "me" or a numeric user id; null unassigns. */
+  assignee?: string | null;
+  /** Accountable user: "me" or a numeric user id; null clears. */
+  responsible?: string | null;
+  /** Parent work package id; null detaches from the parent. */
+  parentId?: number | null;
+  /**
+   * lockVersion of the read this edit is based on. When set, an edit made by
+   * someone else since then is reported as a ConflictError instead of overwritten.
+   */
+  lockVersion?: number;
+}
+
+/** Current values of the editable fields, as before/after diffs show them. */
+export interface EditableWorkPackageFields {
+  subject: string;
+  description: string;
+  startDate: string | null;
+  dueDate: string | null;
+  estimatedHours: number | null;
+  percentageDone: number | null;
+  priority: string | null;
+  assignee: string | null;
+  responsible: string | null;
+  parentId: number | null;
+}
+
+/** Before/after values of every field an edit touches. */
+export type WorkPackageChanges = {
+  [K in keyof EditableWorkPackageFields]?: { from: EditableWorkPackageFields[K]; to: EditableWorkPackageFields[K] };
+};
+
+export interface WorkPackageEditPreview {
+  workPackageId: number;
+  /** lockVersion the edit would be applied on top of. */
+  lockVersion: number;
+  changes: WorkPackageChanges;
+}
+
+export interface WorkPackageEditResult {
+  workPackage: WorkPackageSummaryDTO;
+  changes: WorkPackageChanges;
+  /** lockVersion after the edit; pass it to the next edit. */
+  lockVersion: number;
+}
+
 export interface RelationDTO {
   /** Relation id (0 for parent/child pseudo-relations derived from _links). */
   id: number;
@@ -143,6 +206,7 @@ export interface WorkPackageDetailDTO extends WorkPackageSummaryDTO {
   startDate: string | null;
   dueDate: string | null;
   estimatedHours: number | null;
+  percentageDone: number | null;
   /** Needed for any subsequent PATCH; OpenProject rejects updates without it. */
   lockVersion: number;
   customFields: Record<string, unknown>;

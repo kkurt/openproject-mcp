@@ -86,7 +86,10 @@ async function resolveLink(
   const baseType = field.type.replace(/^\[\]/, '');
   if (baseType === 'User') return { href: `${HREF_BASE['User']}/${await deps.resolveUserId(text)}`, title: text };
   const base = HREF_BASE[baseType];
-  if (base && /^\d+$/.test(text)) return { href: `${base}/${text}`, title: text };
+  if (!base) {
+    throw new UnprocessableError(`Custom field '${field.name}' has type ${field.type}, which this tool cannot set.`, 422);
+  }
+  if (/^\d+$/.test(text)) return { href: `${base}/${text}`, title: text };
   throw new UnprocessableError(
     `Cannot resolve '${text}' for custom field '${field.name}' (${field.type}); pass a numeric id.`,
     422,

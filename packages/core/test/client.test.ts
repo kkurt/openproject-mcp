@@ -308,6 +308,7 @@ describe('editWorkPackage custom fields', () => {
       _links: { allowedValues: { href: '/api/v3/projects/3/available_assignees' } },
     },
     customField6: { type: 'Integer', name: 'Locked', writable: false },
+    customField7: { type: 'CustomField::Hierarchy::Item', name: 'Area', writable: true, location: '_links' },
   };
   const current = workPackageHal({
     customField2: 'OLD-1',
@@ -393,6 +394,8 @@ describe('editWorkPackage custom fields', () => {
     await expect(client.editWorkPackage(42, { customFields: { Severity: ['Major', 'Major'] } })).rejects.toThrow(
       /single value/,
     );
+    // A link type without embedded options or a known endpoint: an id would not help either.
+    await expect(client.editWorkPackage(42, { customFields: { Area: 5 } })).rejects.toThrow(/cannot set/);
     expect(patches).toHaveLength(0);
   });
 });

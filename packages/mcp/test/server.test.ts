@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { UnprocessableError, type OpenProjectClient } from '@openproject-agent/core';
-import { createServer } from '@openproject-agent/mcp';
+import { PassThrough } from 'node:stream';
+import { createServer, exitWhenStdinCloses } from '@openproject-agent/mcp';
 
 const summary = {
   id: 42,
@@ -160,6 +161,23 @@ describe('tool registration', () => {
     const listWp = tools.find((t) => t.name === 'list_work_packages');
     expect(listWp?.inputSchema?.properties).toHaveProperty('projectId');
     expect(listWp?.inputSchema?.properties).toHaveProperty('statuses');
+  });
+});
+
+describe('exitWhenStdinCloses', () => {
+  it('exits with code 0 only once stdin closes', async () => {
+    const stdin = new PassThrough();
+    const exit = vi.fn();
+    exitWhenStdinCloses(stdin, exit);
+    stdin.resume();
+
+    stdin.write('still connected');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(exit).not.toHaveBeenCalled();
+
+    stdin.end();
+    await new Promise((resolve) => stdin.once('close', resolve));
+    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
   });
 });
 

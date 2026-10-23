@@ -9,7 +9,7 @@ import { OpenProjectClient } from '@openproject-agent/core';
 import { loadConfigFromEnv } from './config.js';
 import { runDoctor } from './doctor.js';
 import { applyEnvFallback } from './env.js';
-import { createServer } from './server.js';
+import { createServer, exitWhenStdinCloses } from './server.js';
 
 async function main(): Promise<void> {
   if (process.argv.includes('--doctor') || process.argv.includes('doctor')) {
@@ -35,6 +35,7 @@ async function main(): Promise<void> {
     protectedTransitions: config.protectedTransitions,
     startStatus: config.startStatus,
   });
+  exitWhenStdinCloses(process.stdin);
   await server.connect(new StdioServerTransport());
   // stdout is reserved for the MCP protocol; all logs go to stderr.
   console.error(

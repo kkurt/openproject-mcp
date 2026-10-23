@@ -140,6 +140,11 @@ export interface UpdateWorkPackageParams {
   /** Parent work package id; null detaches from the parent. */
   parentId?: number | null;
   /**
+   * Custom field values keyed by `customField<N>` or display name. List fields take
+   * option titles or ids (an array for multi-select); null clears.
+   */
+  customFields?: Record<string, CustomFieldInput>;
+  /**
    * lockVersion of the read this edit is based on. When set, an edit made by
    * someone else since then is reported as a ConflictError instead of overwritten.
    */
@@ -160,16 +165,38 @@ export interface EditableWorkPackageFields {
   parentId: number | null;
 }
 
+export type CustomFieldInput = string | number | boolean | null | Array<string | number>;
+
+export interface CustomFieldChange {
+  /** Display name of the custom field. */
+  name: string;
+  /** Current value; link fields show titles (an array for multi-select). */
+  from: unknown;
+  to: unknown;
+}
+
 /** Before/after values of every field an edit touches. */
 export type WorkPackageChanges = {
   [K in keyof EditableWorkPackageFields]?: { from: EditableWorkPackageFields[K]; to: EditableWorkPackageFields[K] };
+} & {
+  /** Keyed by `customField<N>`. */
+  customFields?: Record<string, CustomFieldChange>;
 };
+
+/** One server-side validation message from the work-package form. */
+export interface ValidationErrorDTO {
+  /** API attribute name, e.g. "dueDate" or "customField3". */
+  field: string;
+  message: string;
+}
 
 export interface WorkPackageEditPreview {
   workPackageId: number;
   /** lockVersion the edit would be applied on top of. */
   lockVersion: number;
   changes: WorkPackageChanges;
+  /** What OpenProject would reject if the edit were sent; empty when it would be accepted. */
+  validationErrors: ValidationErrorDTO[];
 }
 
 export interface WorkPackageEditResult {

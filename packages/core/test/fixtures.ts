@@ -71,6 +71,24 @@ export function activityHal(id: number, raw: string, user = 'Alice'): Record<str
   };
 }
 
+/** A work-package form whose schema carries the given fields (only forms embed allowedValues). */
+export function editFormHal(
+  schema: Record<string, unknown>,
+  validationErrors: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { _type: 'Form', _embedded: { schema, payload: {}, validationErrors } };
+}
+
+/** A form validation error as OpenProject reports it per attribute. */
+export function validationErrorHal(attribute: string, message: string): Record<string, unknown> {
+  return {
+    _type: 'Error',
+    errorIdentifier: 'urn:openproject-org:api:v3:errors:PropertyConstraintViolation',
+    message,
+    _embedded: { details: { attribute } },
+  };
+}
+
 /** A form response whose status schema exposes the given allowed transitions. */
 export function formHal(allowed: Array<{ id: number; name: string }>): Record<string, unknown> {
   return {

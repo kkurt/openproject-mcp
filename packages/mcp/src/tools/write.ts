@@ -1,7 +1,7 @@
 /** Write MCP tools. Every tool honors `dryRun` and the global read-only mode. */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { WorkPackageChanges } from '@openproject-agent/core';
+import { OpenProjectError, type UpdateWorkPackageParams, type WorkPackageChanges } from '@openproject-agent/core';
 import { z } from 'zod';
 import { errorResult, isProtectedTransition, jsonResult, type ToolContext } from './context.js';
 
@@ -10,20 +10,48 @@ const READ_ONLY_MSG = 'Server is in read-only mode; this write was refused. Re-r
 /** update_work_package inputs that shape the edit rather than name a field to change. */
 const EDIT_OPTION_KEYS = new Set(['descriptionMode', 'lockVersion']);
 
+function hasFieldToChange(params: UpdateWorkPackageParams): boolean {
+  return Object.entries(params).some(([key, value]) => {
+    if (value === undefined || EDIT_OPTION_KEYS.has(key)) return false;
+    return key !== 'customFields' || Object.keys(value as object).length > 0;
+  });
+}
+
 const CHANGE_TEXT_LIMIT = 600;
 
 /** Keep the head and tail of long text so a diff stays readable (an append lands at the end). */
-function elide(text: string): string {
-  if (text.length <= CHANGE_TEXT_LIMIT) return text;
+function elide<T>(value: T): T | string {
+  if (typeof value !== 'string' || value.length <= CHANGE_TEXT_LIMIT) return value;
   const half = CHANGE_TEXT_LIMIT / 2;
-  return `${text.slice(0, half)}\n… [${text.length - CHANGE_TEXT_LIMIT} chars omitted] …\n${text.slice(-half)}`;
+  return `${value.slice(0, half)}\n… [${value.length - CHANGE_TEXT_LIMIT} chars omitted] …\n${value.slice(-half)}`;
 }
 
 function compactChanges(changes: WorkPackageChanges): WorkPackageChanges {
-  const { description } = changes;
-  if (!description) return changes;
-  return { ...changes, description: { from: elide(description.from), to: elide(description.to) } };
+  const out: WorkPackageChanges = { ...changes };
+  if (changes.description) {
+    out.description = { from: elide(changes.description.from), to: elide(changes.description.to) };
+  }
+  if (changes.customFields) {
+    out.customFields = Object.fromEntries(
+      Object.entries(changes.customFields).map(([key, c]) => [key, { ...c, from: elide(c.from), to: elide(c.to) }]),
+    );
+  }
+  return out;
 }
+
+/** OpenProject's message plus its per-field details (a 422 often carries several). */
+function describeApiError(err: OpenProjectError): string {
+  const details = err.details.map((d) => d.message).filter((m) => m && m !== err.message);
+  return details.length ? `${err.message}\n- ${details.join('\n- ')}` : err.message;
+}
+
+const customFieldValue = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+  z.array(z.union([z.string(), z.number()])),
+]);
 
 /** Shared status-transition logic: resolve target, block protected/disallowed, honor dryRun/read-only. */
 async function transitionStatus(
@@ -172,10 +200,11 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       title: 'Update work package',
       description:
         'Edit fields of a work package: subject, description (replace or append), start/due date, estimate, ' +
-        '% done, priority, assignee, accountable, parent. Only the fields you pass change; null clears a field. ' +
-        'Status is NOT changed here (use update_work_package_status). When replacing the description, pass the ' +
-        'lockVersion from get_work_package so a concurrent human edit is reported instead of overwritten. ' +
-        'dryRun returns the before/after of each field without writing.',
+        '% done, priority, assignee, accountable, parent, custom fields. Only the fields you pass change; null ' +
+        'clears a field. Status is NOT changed here (use update_work_package_status). When replacing the ' +
+        'description, pass the lockVersion from get_work_package so a concurrent human edit is reported instead ' +
+        'of overwritten. dryRun returns the before/after of each field plus the validation errors OpenProject ' +
+        'would raise, without writing.',
       inputSchema: {
         workPackageId: z.number().int().positive(),
         subject: z.string().min(1).optional(),
@@ -196,6 +225,13 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
           .optional()
           .describe('Accountable user: "me", a numeric user id, or null to clear.'),
         parentId: z.number().int().positive().nullable().optional().describe('Parent work package id, or null to detach.'),
+        customFields: z
+          .record(z.string(), customFieldValue)
+          .optional()
+          .describe(
+            'Custom field values keyed by customField<N> or display name (see get_work_package_schema). ' +
+              'List fields take option names or ids, as an array for multi-select; null clears.',
+          ),
         lockVersion: z
           .number()
           .int()
@@ -206,19 +242,24 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
       },
     },
     async ({ workPackageId, dryRun, ...params }) => {
-      if (!Object.entries(params).some(([key, value]) => value !== undefined && !EDIT_OPTION_KEYS.has(key))) {
+      if (!hasFieldToChange(params)) {
         return errorResult(
-          'Nothing to update: pass at least one field (subject, description, dates, ...). ' +
+          'Nothing to update: pass at least one field (subject, description, dates, customFields, ...). ' +
             'Status changes go through update_work_package_status.',
         );
       }
-      if (dryRun) {
-        const preview = await ctx.client.previewWorkPackageEdit(workPackageId, params);
-        return jsonResult({ dryRun: true, action: 'update_work_package', ...preview, changes: compactChanges(preview.changes) });
+      try {
+        if (dryRun) {
+          const preview = await ctx.client.previewWorkPackageEdit(workPackageId, params);
+          return jsonResult({ dryRun: true, action: 'update_work_package', ...preview, changes: compactChanges(preview.changes) });
+        }
+        if (ctx.readOnly) return errorResult(READ_ONLY_MSG);
+        const result = await ctx.client.editWorkPackage(workPackageId, params);
+        return jsonResult({ ok: true, ...result, changes: compactChanges(result.changes) });
+      } catch (err) {
+        if (err instanceof OpenProjectError) return errorResult(describeApiError(err));
+        throw err;
       }
-      if (ctx.readOnly) return errorResult(READ_ONLY_MSG);
-      const result = await ctx.client.editWorkPackage(workPackageId, params);
-      return jsonResult({ ok: true, ...result, changes: compactChanges(result.changes) });
     },
   );
 

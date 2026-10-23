@@ -169,9 +169,17 @@ performs a live auth + project-listing round-trip, and ends with a one-line fix 
 `add_comment`, `update_work_package_status`, `start_work_package` (move a WP to the start
 status, default "In progress" — call when you begin work), `create_work_package`,
 `update_work_package` (edit subject, description — replace or append — dates, estimate, % done,
-priority, assignee, accountable, parent; `null` clears a field; dryRun returns a before/after
-diff; pass `lockVersion` from `get_work_package` to have a concurrent edit reported instead of
-overwritten), `assign_work_package`, `log_time`.
+priority, assignee, accountable, parent and custom fields; `null` clears a field; dryRun returns a
+before/after diff plus the validation errors OpenProject would raise; pass `lockVersion` from
+`get_work_package` to have a concurrent edit reported instead of overwritten),
+`assign_work_package`, `log_time`.
+
+Custom fields are keyed by `customField<N>` or display name, and list fields take option names
+or ids (an array for multi-select):
+
+```json
+{ "workPackageId": 348, "customFields": { "Related": ["MetaSync", "MetaAddIn"] }, "dryRun": true }
+```
 
 Critical transitions in `protectedTransitions` are refused with a "human approval required"
 error, and work-package deletion is never exposed.

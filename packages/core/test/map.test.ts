@@ -87,6 +87,20 @@ describe('mapWorkPackageDetail', () => {
     });
   });
 
+  it('maps multi-select custom field links to their titles', () => {
+    const hal = workPackageHal({
+      _links: {
+        customField1: [
+          { href: '/api/v3/custom_options/1', title: 'MetaAdmin' },
+          { href: '/api/v3/custom_options/3', title: 'MetaSync' },
+        ],
+        customField2: [],
+      },
+    });
+    const detail = mapWorkPackageDetail(hal, { comments: [], relations: [], attachments: [] }, BASE);
+    expect(detail.customFields).toEqual({ customField1: ['MetaAdmin', 'MetaSync'], customField2: [] });
+  });
+
   it('reads the estimate from estimatedTime (ISO-8601) and percentageDone', () => {
     const hal = workPackageHal({ estimatedTime: 'PT2H30M', percentageDone: 60 });
     const detail = mapWorkPackageDetail(hal, { comments: [], relations: [], attachments: [] }, BASE);

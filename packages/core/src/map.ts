@@ -17,6 +17,7 @@ import type {
   StatusDTO,
   TypeDTO,
   UserDTO,
+  ValidationErrorDTO,
   WorkPackageDetailDTO,
   WorkPackageSchemaDTO,
   WorkPackageSummaryDTO,
@@ -234,7 +235,8 @@ export function mapUser(hal: HalResource): UserDTO {
 
 // --- work package detail assembly ------------------------------------------
 
-function collectCustomFields(hal: HalResource): Record<string, unknown> {
+/** Custom field values keyed by `customField<N>`; link fields map to titles (an array for multi-select). */
+export function collectCustomFields(hal: HalResource): Record<string, unknown> {
   const custom: Record<string, unknown> = {};
   const re = /^customField\d+$/;
   for (const [key, value] of Object.entries(hal)) {
@@ -242,12 +244,24 @@ function collectCustomFields(hal: HalResource): Record<string, unknown> {
   }
   if (hal._links) {
     for (const [key, value] of Object.entries(hal._links)) {
-      if (re.test(key) && value && !Array.isArray(value)) {
-        custom[key] = (value as HalLink).title ?? (value as HalLink).href;
-      }
+      if (!re.test(key) || !value) continue;
+      custom[key] = Array.isArray(value) ? value.map((l) => l.title ?? l.href) : (value.title ?? value.href);
     }
   }
   return custom;
+}
+
+/** Flatten a form's `validationErrors` (one Error or MultipleErrors per attribute) to one entry per message. */
+export function mapValidationErrors(form: HalResource): ValidationErrorDTO[] {
+  const byField = (form._embedded?.['validationErrors'] ?? {}) as Record<string, HalResource>;
+  const out: ValidationErrorDTO[] = [];
+  for (const [field, error] of Object.entries(byField)) {
+    const nested = error._embedded?.['errors'];
+    for (const e of Array.isArray(nested) ? (nested as HalResource[]) : [error]) {
+      out.push({ field, message: str(e['message']) ?? 'Invalid value' });
+    }
+  }
+  return out;
 }
 
 function parentChildRelations(hal: HalResource): RelationDTO[] {

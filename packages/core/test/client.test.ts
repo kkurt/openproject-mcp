@@ -4,11 +4,13 @@ import { setupServer } from 'msw/node';
 import { ConflictError, NotFoundError, OpenProjectClient, UnprocessableError } from '@openproject-agent/core';
 import {
   activityHal,
+  editFormHal,
   formHal,
   halCollection,
   priorityHal,
   statusHal,
   typeHal,
+  validationErrorHal,
   workPackageHal,
 } from './fixtures.js';
 
@@ -225,16 +227,173 @@ describe('editWorkPackage', () => {
     expect(patchCount).toBe(1);
   });
 
-  it('previewWorkPackageEdit computes the diff without writing', async () => {
+  it('previewWorkPackageEdit computes the diff and validates it via the form, without writing', async () => {
+    let formBody: Record<string, unknown> = {};
     server.use(
       http.get(`${BASE}/api/v3/work_packages/42`, () => HttpResponse.json(workPackageHal({ lockVersion: 4 }))),
+      http.post(`${BASE}/api/v3/work_packages/42/form`, async ({ request }) => {
+        formBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(editFormHal({}));
+      }),
     );
     const preview = await makeClient().previewWorkPackageEdit(42, { subject: 'Renamed' });
+    expect(formBody).toEqual({ lockVersion: 4, subject: 'Renamed' });
     expect(preview).toEqual({
       workPackageId: 42,
       lockVersion: 4,
       changes: { subject: { from: 'Fix the login crash', to: 'Renamed' } },
+      validationErrors: [],
     });
+  });
+
+  it('previewWorkPackageEdit flattens the form validation errors, including MultipleErrors', async () => {
+    server.use(
+      http.get(`${BASE}/api/v3/work_packages/42`, () => HttpResponse.json(workPackageHal())),
+      http.post(`${BASE}/api/v3/work_packages/42/form`, () =>
+        HttpResponse.json(
+          editFormHal(
+            {},
+            {
+              dueDate: validationErrorHal('dueDate', 'Finish date must be greater than or equal to the start date.'),
+              subject: {
+                _type: 'MultipleErrors',
+                message: 'Multiple field constraints have been violated.',
+                _embedded: {
+                  errors: [validationErrorHal('subject', "Subject can't be blank."), validationErrorHal('subject', 'Subject is too short.')],
+                },
+              },
+            },
+          ),
+        ),
+      ),
+    );
+    const preview = await makeClient().previewWorkPackageEdit(42, { subject: '', startDate: '2026-12-10', dueDate: '2026-12-01' });
+    expect(preview.validationErrors).toEqual([
+      { field: 'dueDate', message: 'Finish date must be greater than or equal to the start date.' },
+      { field: 'subject', message: "Subject can't be blank." },
+      { field: 'subject', message: 'Subject is too short.' },
+    ]);
+  });
+});
+
+describe('editWorkPackage custom fields', () => {
+  const schema = {
+    subject: { type: 'String', name: 'Subject', writable: true },
+    customField1: {
+      type: '[]CustomOption',
+      name: 'Related',
+      writable: true,
+      location: '_links',
+      _links: {
+        allowedValues: [
+          { href: '/api/v3/custom_options/1', title: 'MetaAdmin' },
+          { href: '/api/v3/custom_options/3', title: 'MetaSync' },
+        ],
+      },
+    },
+    customField2: { type: 'String', name: 'Müşteri Kodu', writable: true },
+    customField3: { type: 'Formattable', name: 'Notes', writable: true },
+    customField4: {
+      type: 'CustomOption',
+      name: 'Severity',
+      writable: true,
+      location: '_links',
+      _links: { allowedValues: [{ href: '/api/v3/custom_options/7', title: 'Major' }] },
+    },
+    customField5: {
+      type: 'User',
+      name: 'Reviewer',
+      writable: true,
+      location: '_links',
+      _links: { allowedValues: { href: '/api/v3/projects/3/available_assignees' } },
+    },
+    customField6: { type: 'Integer', name: 'Locked', writable: false },
+  };
+  const current = workPackageHal({
+    customField2: 'OLD-1',
+    _links: {
+      customField1: [{ href: '/api/v3/custom_options/1', title: 'MetaAdmin' }],
+      customField4: { href: null },
+    },
+  });
+
+  function serve(): { patches: Array<Record<string, unknown>>; formBodies: Array<Record<string, unknown>> } {
+    const patches: Array<Record<string, unknown>> = [];
+    const formBodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.get(`${BASE}/api/v3/users/me`, () => HttpResponse.json({ _type: 'User', id: 9, name: 'Me', login: 'me' })),
+      http.get(`${BASE}/api/v3/work_packages/42`, () => HttpResponse.json(current)),
+      http.post(`${BASE}/api/v3/work_packages/42/form`, async ({ request }) => {
+        formBodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(editFormHal(schema));
+      }),
+      http.patch(`${BASE}/api/v3/work_packages/42`, async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(workPackageHal({ lockVersion: 4 }));
+      }),
+    );
+    return { patches, formBodies };
+  }
+
+  it('resolves keys or display names, and option titles or ids, into properties and links', async () => {
+    const { patches, formBodies } = serve();
+    const res = await makeClient().editWorkPackage(42, {
+      customFields: {
+        Related: ['metasync', 1],
+        customField2: 'ACME-7',
+        notes: '**bold**',
+        Severity: 7,
+        Reviewer: 'me',
+      },
+    });
+    expect(formBodies).toEqual([{ lockVersion: 3 }]);
+    expect(patches).toEqual([
+      {
+        lockVersion: 3,
+        customField2: 'ACME-7',
+        customField3: { format: 'markdown', raw: '**bold**' },
+        _links: {
+          customField1: [{ href: '/api/v3/custom_options/3' }, { href: '/api/v3/custom_options/1' }],
+          customField4: { href: '/api/v3/custom_options/7' },
+          customField5: { href: '/api/v3/users/9' },
+        },
+      },
+    ]);
+    expect(res.changes).toEqual({
+      customFields: {
+        customField1: { name: 'Related', from: ['MetaAdmin'], to: ['MetaSync', 'MetaAdmin'] },
+        customField2: { name: 'Müşteri Kodu', from: 'OLD-1', to: 'ACME-7' },
+        customField3: { name: 'Notes', from: null, to: '**bold**' },
+        customField4: { name: 'Severity', from: null, to: 'Major' },
+        customField5: { name: 'Reviewer', from: null, to: 'me' },
+      },
+    });
+  });
+
+  it('null clears: multi-select to [], single link to href null, plain value to null', async () => {
+    const { patches } = serve();
+    await makeClient().editWorkPackage(42, { customFields: { Related: null, Severity: null, customField2: null } });
+    expect(patches[0]).toEqual({
+      lockVersion: 3,
+      customField2: null,
+      _links: { customField1: [], customField4: { href: null } },
+    });
+  });
+
+  it('refuses unknown fields, disallowed options, read-only fields and extra values without a PATCH', async () => {
+    const { patches } = serve();
+    const client = makeClient();
+    await expect(client.editWorkPackage(42, { customFields: { Nope: 1 } })).rejects.toThrow(
+      /Unknown custom field 'Nope'.*Related \(customField1\)/,
+    );
+    await expect(client.editWorkPackage(42, { customFields: { Related: ['Bogus'] } })).rejects.toThrow(
+      /'Bogus'.*Allowed: MetaAdmin, MetaSync/,
+    );
+    await expect(client.editWorkPackage(42, { customFields: { Locked: 1 } })).rejects.toBeInstanceOf(UnprocessableError);
+    await expect(client.editWorkPackage(42, { customFields: { Severity: ['Major', 'Major'] } })).rejects.toThrow(
+      /single value/,
+    );
+    expect(patches).toHaveLength(0);
   });
 });
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { OpenProjectClient } from '@openproject-agent/core';
+import { UnprocessableError, type OpenProjectClient } from '@openproject-agent/core';
 import { createServer } from '@openproject-agent/mcp';
 
 const summary = {
@@ -80,6 +80,7 @@ function makeMockClient(overrides: Record<string, unknown> = {}) {
       workPackageId: 42,
       lockVersion: 3,
       changes: { subject: { from: 'Fix the login crash', to: 'Renamed' } },
+      validationErrors: [],
     })),
     editWorkPackage: vi.fn(async () => ({
       workPackage: summary,
@@ -376,7 +377,50 @@ describe('update_work_package', () => {
     const { isError, text } = await call(mcpClient, 'update_work_package', { workPackageId: 42, lockVersion: 3 });
     expect(isError).toBe(true);
     expect(text).toMatch(/nothing to update/i);
+    const empty = await call(mcpClient, 'update_work_package', { workPackageId: 42, customFields: {} });
+    expect(empty.isError).toBe(true);
     expect(mock.editWorkPackage).not.toHaveBeenCalled();
+  });
+
+  it('passes custom fields through and reports the form validation errors on dryRun', async () => {
+    const { mcpClient, mock } = await harness({
+      client: {
+        previewWorkPackageEdit: vi.fn(async () => ({
+          workPackageId: 42,
+          lockVersion: 3,
+          changes: { customFields: { customField1: { name: 'Related', from: [], to: ['MetaSync'] } } },
+          validationErrors: [{ field: 'dueDate', message: 'Finish date must be greater than or equal to the start date.' }],
+        })),
+      },
+    });
+    const { json } = await call(mcpClient, 'update_work_package', {
+      workPackageId: 42,
+      customFields: { Related: ['MetaSync'] },
+      dryRun: true,
+    });
+    expect(mock.previewWorkPackageEdit).toHaveBeenCalledWith(42, { customFields: { Related: ['MetaSync'] } });
+    expect(json()).toMatchObject({
+      dryRun: true,
+      changes: { customFields: { customField1: { to: ['MetaSync'] } } },
+      validationErrors: [{ field: 'dueDate' }],
+    });
+  });
+
+  it('includes per-field details of a 422 in the error text', async () => {
+    const { mcpClient } = await harness({
+      client: {
+        editWorkPackage: vi.fn(async () => {
+          throw new UnprocessableError('Multiple field constraints have been violated.', 422, {
+            details: [{ message: "Subject can't be blank." }, { message: 'Duration must be greater than 0.' }],
+          });
+        }),
+      },
+    });
+    const { isError, text } = await call(mcpClient, 'update_work_package', { workPackageId: 42, subject: 'x' });
+    expect(isError).toBe(true);
+    expect(text).toContain('Multiple field constraints have been violated.');
+    expect(text).toContain("Subject can't be blank.");
+    expect(text).toContain('Duration must be greater than 0.');
   });
 
   it('read-only mode refuses a real update but still previews', async () => {

@@ -5,6 +5,7 @@
  * the work-package form.
  */
 import { HttpClient, type HttpClientOptions } from './http.js';
+import { buildCustomFieldPatch } from './custom-fields.js';
 import { ConflictError, NotFoundError, OpenProjectError, UnprocessableError } from './errors.js';
 import {
   assigneeIdFilter,
@@ -518,14 +519,21 @@ export class OpenProjectClient {
     return map.mapWorkPackageSummary(await this.patchFromCurrent(id, async () => patch), this.baseUrl);
   }
 
+  /** The edit form's schema: unlike the plain schema endpoint, it embeds allowedValues for list fields. */
+  private async editFormSchema(id: number | string, current: HalResource): Promise<Record<string, unknown>> {
+    const form = await this.http.post<HalResource>(`/work_packages/${id}/form`, { lockVersion: lockVersionOf(current) });
+    return (form._embedded?.['schema'] ?? {}) as Record<string, unknown>;
+  }
+
   /** Translate edit params into a PATCH body plus the before/after of every touched field. */
   private async buildEdit(
+    id: number | string,
     current: HalResource,
     params: UpdateWorkPackageParams,
   ): Promise<{ body: Record<string, unknown>; changes: WorkPackageChanges }> {
     const before = map.mapEditableFields(current);
     const body: Record<string, unknown> = {};
-    const links: Record<string, { href: string | null }> = {};
+    const links: Record<string, { href: string | null } | Array<{ href: string }>> = {};
     const changes: WorkPackageChanges = {};
     const change = <K extends keyof EditableWorkPackageFields>(key: K, to: EditableWorkPackageFields[K]): void => {
       // TS cannot relate a write through a generic key of a mapped type; the cast is sound.
@@ -580,6 +588,14 @@ export class OpenProjectClient {
       links['parent'] = { href: params.parentId === null ? null : `/api/v3/work_packages/${params.parentId}` };
       change('parentId', params.parentId);
     }
+    if (params.customFields && Object.keys(params.customFields).length > 0) {
+      const custom = await buildCustomFieldPatch(await this.editFormSchema(id, current), current, params.customFields, {
+        resolveUserId: (value) => this.resolveAssigneeId(value),
+      });
+      Object.assign(body, custom.props);
+      Object.assign(links, custom.links);
+      changes.customFields = custom.changes;
+    }
     if (Object.keys(links).length > 0) body['_links'] = links;
     return { body, changes };
   }
@@ -593,7 +609,7 @@ export class OpenProjectClient {
     const updated = await this.patchFromCurrent(
       id,
       async (current) => {
-        const edit = await this.buildEdit(current, params);
+        const edit = await this.buildEdit(id, current, params);
         changes = edit.changes;
         return edit.body;
       },
@@ -602,13 +618,17 @@ export class OpenProjectClient {
     return { workPackage: map.mapWorkPackageSummary(updated, this.baseUrl), changes, lockVersion: lockVersionOf(updated) };
   }
 
-  /** The before/after an edit would produce, without writing (for dryRun previews). */
+  /**
+   * The before/after an edit would produce, plus what OpenProject would reject,
+   * without writing: the form endpoint validates a body but does not save it.
+   */
   async previewWorkPackageEdit(id: number | string, params: UpdateWorkPackageParams): Promise<WorkPackageEditPreview> {
     const current = await this.http.get<HalResource>(`/work_packages/${id}`);
     const lockVersion = lockVersionOf(current);
     if (params.lockVersion !== undefined) assertLockVersionFresh(id, params.lockVersion, lockVersion);
-    const { changes } = await this.buildEdit(current, params);
-    return { workPackageId: Number(id), lockVersion, changes };
+    const { body, changes } = await this.buildEdit(id, current, params);
+    const form = await this.http.post<HalResource>(`/work_packages/${id}/form`, { lockVersion, ...body });
+    return { workPackageId: Number(id), lockVersion, changes, validationErrors: map.mapValidationErrors(form) };
   }
 
   /** Change status by name or id; verifies the transition is permitted first. */
